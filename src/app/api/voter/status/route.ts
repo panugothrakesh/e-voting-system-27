@@ -1,18 +1,22 @@
 import { NextResponse } from 'next/server'
 import clientPromise from '@/lib/mongodb'
+import { hashAddress } from '@/utils/crypto'
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
-    const walletAddress = searchParams.get('address')
+    const address = searchParams.get('address')
 
-    if (!walletAddress) {
+    if (!address) {
       return NextResponse.json({ error: 'Wallet address is required' }, { status: 400 })
     }
 
     const client = await clientPromise
     const db = client.db('e-voting')
-    const voter = await db.collection('voters').findOne({ walletAddress })
+
+    // Use hashed address for lookup
+    const hashedAddress = hashAddress(address)
+    const voter = await db.collection('voters').findOne({ hashedAddress })
 
     if (!voter) {
       return NextResponse.json({ 
@@ -21,7 +25,7 @@ export async function GET(request: Request) {
       })
     }
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       isRegistered: true,
       status: voter.status
     })

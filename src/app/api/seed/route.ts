@@ -1,46 +1,60 @@
 import { NextResponse } from 'next/server'
 import clientPromise from '@/lib/mongodb'
+import { encryptAddress } from '@/utils/crypto'
 
 export async function GET() {
   try {
     const client = await clientPromise
     const db = client.db('e-voting')
 
-    // Clear existing data
-    await db.collection('voters').deleteMany({})
-    await db.collection('elections').deleteMany({})
-
-    // Create dummy voters
+    // Sample voters data
     const voters = [
-      { address: '0xEc97ADF38aD8421cf8bdcaD2dA11883748b80839', isWhitelisted: true, hasVoted: false, createdAt: new Date() },
-      { address: '0x1234567890123456789012345678901234567890', isWhitelisted: true, hasVoted: false, createdAt: new Date() },
-      { address: '0x0987654321098765432109876543210987654321', isWhitelisted: false, hasVoted: false, createdAt: new Date() },
+      {
+        firstName: 'John',
+        lastName: 'Doe',
+        aadhar: '123456789012',
+        phoneNumber: '+1234567890',
+        country: 'India',
+        physicalAddress: '123 Main St, City, State',
+        status: 'pending',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      },
+      {
+        firstName: 'Jane',
+        lastName: 'Smith',
+        aadhar: '987654321098',
+        phoneNumber: '+1987654321',
+        country: 'India',
+        physicalAddress: '456 Oak St, City, State',
+        status: 'pending',
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }
     ]
-    await db.collection('voters').insertMany(voters)
 
-    // Create dummy election
-    const election = {
-      title: 'Student Council Election 2024',
-      description: 'Annual election for student council positions',
-      startDate: new Date(),
-      endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
-      candidates: [
-        { name: 'John Doe', description: 'President Candidate', votes: 0 },
-        { name: 'Jane Smith', description: 'Vice President Candidate', votes: 0 },
-        { name: 'Mike Johnson', description: 'Secretary Candidate', votes: 0 },
-      ],
-      isActive: true,
-      createdAt: new Date()
-    }
-    await db.collection('elections').insertOne(election)
+    // Add encrypted addresses
+    const votersWithAddresses = voters.map((voter, index) => ({
+      ...voter,
+      encryptedAddress: encryptAddress(`0x${index.toString().padStart(40, '0')}`),
+      hashedAddress: `0x${index.toString().padStart(40, '0')}`
+    }))
+
+    // Clear existing voters
+    await db.collection('voters').deleteMany({})
+
+    // Insert new voters
+    const result = await db.collection('voters').insertMany(votersWithAddresses)
 
     return NextResponse.json({ 
       message: 'Database seeded successfully',
-      voters,
-      election 
+      insertedCount: result.insertedCount
     })
-  } catch (err) {
-    console.error('Failed to seed database:', err)
-    return NextResponse.json({ error: 'Failed to seed database' }, { status: 500 })
+  } catch (error) {
+    console.error('Error seeding database:', error)
+    return NextResponse.json({ 
+      error: 'Failed to seed database',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 })
   }
 } 

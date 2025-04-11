@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import clientPromise from '@/lib/mongodb'
+import { encryptAddress, hashAddress } from '@/utils/crypto'
 
 export async function POST(request: Request) {
   try {
@@ -12,18 +13,24 @@ export async function POST(request: Request) {
     const client = await clientPromise
     const db = client.db('e-voting')
 
-    // Check if voter is already registered
-    const existingVoter = await db.collection('voters').findOne({ walletAddress })
+    // Check if voter already exists using hashed address
+    const hashedAddress = hashAddress(walletAddress)
+    const existingVoter = await db.collection('voters').findOne({ hashedAddress })
+
     if (existingVoter) {
       return NextResponse.json({ 
-        error: 'You have already submitted a registration request',
+        error: 'Voter already registered',
         status: existingVoter.status 
       }, { status: 400 })
     }
 
+    // Encrypt the wallet address
+    const encryptedAddress = encryptAddress(walletAddress)
+
     // Create new voter registration
-    await db.collection('voters').insertOne({
-      walletAddress,
+    const result = await db.collection('voters').insertOne({
+      encryptedAddress,
+      hashedAddress,
       firstName,
       lastName,
       aadhar,
@@ -31,15 +38,29 @@ export async function POST(request: Request) {
       country,
       physicalAddress,
       status: 'pending',
-      createdAt: new Date()
+      createdAt: new Date(),
+      updatedAt: new Date()
     })
 
+    if (!result.acknowledged) {
+      throw new Error('Failed to insert voter record')
+    }
+
+    // Verify the record was inserted
+    const insertedVoter = await db.collection('voters').findOne({ _id: result.insertedId })
+    if (!insertedVoter) {
+      throw new Error('Failed to verify voter record insertion')
+    }
+
     return NextResponse.json({ 
-      message: 'Registration submitted successfully',
+      message: 'Voter registered successfully',
       status: 'pending'
     })
   } catch (error) {
-    console.error('Error in voter registration:', error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    console.error('Error registering voter:', error)
+    return NextResponse.json({ 
+      error: 'Internal server error',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 })
   }
 } 

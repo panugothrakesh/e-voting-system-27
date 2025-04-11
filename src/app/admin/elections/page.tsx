@@ -64,7 +64,7 @@ export default function ManageElections() {
         <h1 className="text-2xl font-bold text-gray-800">Manage Elections</h1>
         <button
           onClick={() => setShowNewElectionModal(true)}
-          className="bg-blue-600 text-white text-gray-900 px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
+          className="bg-blue-600 text-gray-900 px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
         >
           Create New Election
         </button>

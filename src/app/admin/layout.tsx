@@ -29,6 +29,7 @@ export default function AdminLayout({
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [mounted, setMounted] = useState(false)
+  const [isLoading, setIsLoading] = useState(true)
   const { address, isConnected, isAdmin, disconnect } = useWallet()
 
   useEffect(() => {
@@ -37,23 +38,41 @@ export default function AdminLayout({
 
   useEffect(() => {
     if (mounted) {
-      if (!isConnected) {
-        router.push('/')
-        return
-      }
-      if (!isAdmin) {
-        router.push('/')
-      }
+      // Add a small delay to allow the connection state to be determined
+      const timer = setTimeout(() => {
+        setIsLoading(false)
+        if (!isConnected) {
+          router.push('/')
+          return
+        }
+        if (!isAdmin) {
+          router.push('/')
+        }
+      }, 1000) // Wait for 1 second to allow connection state to be determined
+
+      return () => clearTimeout(timer)
     }
   }, [mounted, isConnected, isAdmin, router])
+
+  const handleDisconnect = () => {
+    localStorage.clear()
+    disconnect()
+  }
 
   const shortenAddress = (addr: string | undefined) => {
     if (!addr) return ''
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`
   }
 
-  if (!mounted) {
-    return null
+  if (!mounted || isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
   }
 
   if (!isConnected || !isAdmin) {
@@ -114,7 +133,7 @@ export default function AdminLayout({
                   <>
                     <span className="text-sm text-gray-600">{shortenAddress(address)}</span>
                     <button
-                      onClick={() => disconnect()}
+                      onClick={handleDisconnect}
                       className="bg-red-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-red-600 transition-colors"
                     >
                       Disconnect
@@ -124,7 +143,7 @@ export default function AdminLayout({
                   <div className="flex flex-col items-center space-y-2">
                     <span className="text-xs text-gray-600">{shortenAddress(address)}</span>
                     <button
-                      onClick={() => disconnect()}
+                      onClick={handleDisconnect}
                       className="bg-red-500 text-white p-1 rounded-lg text-xs hover:bg-red-600 transition-colors"
                     >
                       DC
