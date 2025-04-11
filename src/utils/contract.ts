@@ -1,6 +1,6 @@
 import { config } from '@/config/wagmi'
 import { writeContract, readContract, getPublicClient } from '@wagmi/core'
-import { type Address, type BaseError, type Hash } from 'viem'
+import { type Address } from 'viem'
 
 // Factory contract address on Sepolia
 const FACTORY_ADDRESS = '0x05eC535853BAaDC229F90B0a92f85c189168B1AA' as Address
@@ -394,6 +394,8 @@ export async function registerCandidate(
 
     console.log('Transaction hash:', result)
 
+    // Get the public client for interacting with the blockchain
+    // @ts-expect-error - Config type incompatibility
     const publicClient = getPublicClient(config)
     if (!publicClient) {
       throw new Error('Failed to get public client')
@@ -423,7 +425,7 @@ export async function whitelistVoters(
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await writeContract(config, {
       address,
       abi: VOTING_ABI,
@@ -433,7 +435,7 @@ export async function whitelistVoters(
 
     console.log('Transaction hash:', result)
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const publicClient = getPublicClient(config)
     if (!publicClient) {
       throw new Error('Failed to get public client')
@@ -463,7 +465,7 @@ export async function voteByAddress(
       throw new Error('Invalid addresses')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await writeContract(config, {
       address,
       abi: VOTING_ABI,
@@ -473,7 +475,7 @@ export async function voteByAddress(
 
     console.log('Transaction hash:', result)
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const publicClient = getPublicClient(config)
     if (!publicClient) {
       throw new Error('Failed to get public client')
@@ -499,7 +501,7 @@ export async function endVotingAndDeclareWinner(contractAddress: string): Promis
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await writeContract(config, {
       address,
       abi: VOTING_ABI,
@@ -509,7 +511,7 @@ export async function endVotingAndDeclareWinner(contractAddress: string): Promis
 
     console.log('Transaction hash:', result)
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const publicClient = getPublicClient(config)
     if (!publicClient) {
       throw new Error('Failed to get public client')
@@ -539,7 +541,7 @@ export async function getWinner(contractAddress: string): Promise<{
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: VOTING_ABI,
@@ -573,7 +575,7 @@ export async function getAllCandidates(contractAddress: string): Promise<{
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: VOTING_ABI,
@@ -604,7 +606,7 @@ export async function isWhitelisted(contractAddress: string, voterAddress: strin
       throw new Error('Invalid addresses')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: VOTING_ABI,
@@ -633,7 +635,7 @@ export async function hasVoted(contractAddress: string, voterAddress: string): P
       throw new Error('Invalid addresses')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: VOTING_ABI,
@@ -661,7 +663,7 @@ export async function isVotingActive(contractAddress: string): Promise<boolean> 
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: VOTING_ABI,
@@ -688,7 +690,7 @@ export async function isWinnerDeclared(contractAddress: string): Promise<boolean
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: VOTING_ABI,
@@ -717,7 +719,7 @@ export async function castVote(
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await writeContract(config, {
       address,
       abi: [
@@ -735,7 +737,7 @@ export async function castVote(
 
     console.log('Transaction hash:', result)
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const publicClient = getPublicClient(config)
     if (!publicClient) {
       throw new Error('Failed to get public client')
@@ -762,7 +764,7 @@ export async function getElectionResults(
       throw new Error('Invalid contract address')
     }
 
-    // @ts-ignore
+    // @ts-expect-error - Config type incompatibility
     const result = await readContract(config, {
       address,
       abi: [
