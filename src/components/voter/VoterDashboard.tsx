@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStore } from '@/store/useStore'
 import { useQuery } from '@tanstack/react-query'
 
@@ -24,9 +24,20 @@ interface Election {
 export default function VoterDashboard() {
   const { address } = useStore()
   const [selectedCandidate, setSelectedCandidate] = useState<string>('')
+  const [lastRefresh, setLastRefresh] = useState(Date.now())
+
+  // Refresh data periodically
+  useEffect(() => {
+    const timer = setInterval(() => {
+      console.log('Refreshing voter elections data')
+      setLastRefresh(Date.now())
+    }, 5000) // Refresh every 5 seconds
+    
+    return () => clearInterval(timer)
+  }, [])
 
   const { data: voterStatus, isLoading: isStatusLoading } = useQuery<VoterStatus>({
-    queryKey: ['voterStatus', address],
+    queryKey: ['voterStatus', address, lastRefresh],
     queryFn: async () => {
       const response = await fetch(`/api/voter/status?address=${address}`)
       return response.json()
@@ -35,11 +46,16 @@ export default function VoterDashboard() {
   })
 
   const { data: elections, isLoading: isElectionsLoading } = useQuery<Election[]>({
-    queryKey: ['activeElections'],
+    queryKey: ['voterElections', address, lastRefresh],
     queryFn: async () => {
-      const response = await fetch('/api/elections/active')
-      return response.json()
-    }
+      if (!address) return []
+      console.log('Fetching voter elections', { address, timestamp: new Date().toISOString() })
+      const response = await fetch(`/api/voter/elections?address=${address}`)
+      const data = await response.json()
+      console.log('Elections response:', data)
+      return Array.isArray(data) ? data : []
+    },
+    enabled: !!address && !!voterStatus?.isWhitelisted
   })
 
   const handleVote = async (electionId: string) => {
@@ -122,7 +138,11 @@ export default function VoterDashboard() {
       ))}
 
       {elections?.length === 0 && (
-        <p className="text-center text-gray-700">No active elections at the moment.</p>
+        <div className="text-center py-8 bg-yellow-50 rounded-lg border border-yellow-200 p-4">
+          <p className="text-yellow-800 mb-2 font-semibold">No Elections Available</p>
+          <p className="text-gray-700">You haven&apos;t been approved for any active elections yet, or there are no active elections at this time.</p>
+          <p className="text-gray-600 mt-2 text-sm">Please contact the election administrator if you believe this is an error.</p>
+        </div>
       )}
     </div>
   )

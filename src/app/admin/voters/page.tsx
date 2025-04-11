@@ -2,6 +2,16 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { whitelistVoters } from '@/utils/contract'
+import { decryptAddress } from '@/utils/crypto'
+
+interface Election {
+  _id: string
+  title: string
+  description: string
+  contractAddress: string
+  isActive: boolean
+}
 
 interface Voter {
   _id: string
@@ -22,6 +32,17 @@ export default function VoterApprovalPage() {
   const [selectedVoter, setSelectedVoter] = useState<Voter | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selectedElection, setSelectedElection] = useState<string>('')
+
+  // Fetch active elections
+  const { data: elections = [] } = useQuery<Election[]>({
+    queryKey: ['activeElections'],
+    queryFn: async () => {
+      const response = await fetch('/api/admin/elections')
+      const data = await response.json()
+      return Array.isArray(data) ? data : []
+    }
+  })
 
   const { data: voters = [], isLoading, refetch } = useQuery<Voter[]>({
     queryKey: ['pendingVoters'],
@@ -32,11 +53,57 @@ export default function VoterApprovalPage() {
     }
   })
 
-  const handleApprove = async (voter: Voter, action: 'approve' | 'reject') => {
+  const handleApproveSimple = async (voter: Voter, action: 'approve' | 'reject') => {
     try {
+      console.log('Voter approval function called', { voter, action })
       setIsProcessing(true)
       setError(null)
       
+      // For approval, handle the blockchain interaction first
+      if (action === 'approve') {
+        // Check if election is selected
+        if (!selectedElection) {
+          setError('Please select an election to whitelist the voter')
+          throw new Error('Please select an election to whitelist the voter')
+        }
+        
+        // Find election object
+        const electionObj = elections.find(e => e._id === selectedElection)
+        if (!electionObj || !electionObj.contractAddress) {
+          setError('Selected election not found or has no contract address')
+          throw new Error('Selected election not found or has no contract address')
+        }
+        
+        try {
+          // Decrypt the voter's address
+          const decryptedAddress = decryptAddress(voter.encryptedAddress)
+          console.log('Decrypted address:', decryptedAddress)
+          
+          if (!decryptedAddress || !decryptedAddress.startsWith('0x')) {
+            throw new Error('Failed to decrypt voter wallet address or invalid address format')
+          }
+          
+          // Call the smart contract to whitelist the voter
+          console.log('Whitelisting voter on contract:', {
+            contractAddress: electionObj.contractAddress,
+            voterAddress: decryptedAddress
+          })
+          
+          // This will trigger the MetaMask popup
+          const result = await whitelistVoters(
+            electionObj.contractAddress as `0x${string}`, 
+            [decryptedAddress as `0x${string}`]
+          )
+          
+          console.log('Contract interaction successful:', result)
+        } catch (contractError) {
+          console.error('Contract interaction failed:', contractError)
+          setError('Contract interaction failed: ' + (contractError instanceof Error ? contractError.message : String(contractError)))
+          throw new Error('Contract interaction failed')
+        }
+      }
+      
+      // After successful contract interaction (or for reject), update the database
       const response = await fetch('/api/admin/voters/approve', {
         method: 'POST',
         headers: {
@@ -44,11 +111,17 @@ export default function VoterApprovalPage() {
         },
         body: JSON.stringify({ 
           walletAddress: voter.encryptedAddress,
-          action 
+          action,
+          electionId: selectedElection || undefined,
+          electionContractAddress: selectedElection 
+            ? elections.find(e => e._id === selectedElection)?.contractAddress 
+            : undefined
         }),
       })
 
+      console.log('API response status:', response.status)
       const data = await response.json()
+      console.log('API response data:', data)
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to update voter status')
@@ -56,6 +129,7 @@ export default function VoterApprovalPage() {
 
       await refetch()
       setSelectedVoter(null)
+      alert(`Voter ${action}ed successfully!`)
     } catch (error) {
       console.error('Error updating voter status:', error)
       setError(error instanceof Error ? error.message : 'Failed to update voter status')
@@ -77,6 +151,35 @@ export default function VoterApprovalPage() {
           {error}
         </div>
       )}
+
+      {/* Election Selector */}
+      <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+        <label htmlFor="election" className="block text-lg font-medium text-blue-700 mb-2">
+          Step 1: Select Election for Whitelisting
+        </label>
+        <select
+          id="election"
+          value={selectedElection}
+          onChange={(e) => {
+            console.log('Election selected:', e.target.value);
+            setSelectedElection(e.target.value);
+          }}
+          className="block w-full px-3 py-2 border border-blue-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+        >
+          <option value="">Select an election</option>
+          {elections.map((election) => (
+            <option key={election._id} value={election._id}>
+              {election.title} {election.isActive ? '(Active)' : '(Inactive)'} - Contract: {election.contractAddress ? election.contractAddress.substring(0, 8) + '...' : 'No address'}
+            </option>
+          ))}
+        </select>
+        <p className="mt-2 text-sm text-blue-600 font-semibold">
+          You must select an election before you can approve voters. Approving a voter will whitelist them on the blockchain and require a wallet transaction.
+        </p>
+        <p className="mt-1 text-xs text-gray-500">
+          Elections loaded: {elections.length} {elections.length === 0 && '(No elections available, please create one first)'}
+        </p>
+      </div>
 
       {voters.length === 0 ? (
         <div className="text-center py-8 text-gray-500">
@@ -131,18 +234,20 @@ export default function VoterApprovalPage() {
                     {voter.status === 'pending' && (
                       <>
                         <button
-                          onClick={() => handleApprove(voter, 'approve')}
-                          disabled={isProcessing}
-                          className="text-green-600 hover:text-green-900 mr-4 disabled:opacity-50"
+                          onClick={() => {
+                            console.log("APPROVE BUTTON CLICKED - Using simple function", voter.firstName);
+                            handleApproveSimple(voter, 'approve');
+                          }}
+                          className="bg-green-500 text-white font-bold px-4 py-2 rounded-md hover:bg-green-600"
                         >
-                          {isProcessing ? 'Processing...' : 'Approve'}
+                          ✅ APPROVE & WHITELIST
                         </button>
                         <button
-                          onClick={() => handleApprove(voter, 'reject')}
+                          onClick={() => handleApproveSimple(voter, 'reject')}
                           disabled={isProcessing}
-                          className="text-red-600 hover:text-red-900 disabled:opacity-50"
+                          className="bg-red-500 text-white font-bold px-4 py-2 rounded-md ml-2 hover:bg-red-600 disabled:opacity-50"
                         >
-                          {isProcessing ? 'Processing...' : 'Reject'}
+                          {isProcessing ? 'Processing...' : '❌ REJECT'}
                         </button>
                       </>
                     )}

@@ -20,9 +20,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const { title, description, startDate, endDate, candidates } = await request.json()
+    const { title, description, contractAddress } = await request.json()
 
-    if (!title || !description || !startDate || !endDate || !candidates?.length) {
+    if (!title || !description || !contractAddress) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
@@ -32,12 +32,10 @@ export async function POST(request: Request) {
     const election = {
       title,
       description,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
-      candidates: candidates.map((candidate: { name: string; description: string }) => ({
-        ...candidate,
-        votes: 0
-      })),
+      contractAddress,
+      startDate: new Date(),
+      endDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+      candidates: [],
       isActive: true,
       createdAt: new Date()
     }

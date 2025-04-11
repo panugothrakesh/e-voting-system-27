@@ -48,7 +48,7 @@ export default function AdminLayout({
         if (!isAdmin) {
           router.push('/')
         }
-      }, 1000) // Wait for 1 second to allow connection state to be determined
+      }, 1000)
 
       return () => clearTimeout(timer)
     }

@@ -48,12 +48,14 @@ export default function RegistrationForm() {
   })
 
   const { data: elections, isLoading: isLoadingElections } = useQuery<Election[]>({
-    queryKey: ['activeElections'],
+    queryKey: ['voterElections', address],
     queryFn: async () => {
-      const response = await fetch('/api/elections/active')
-      return response.json()
+      if (!address) return []
+      const response = await fetch(`/api/voter/elections?address=${address}`)
+      const data = await response.json()
+      return Array.isArray(data) ? data : []
     },
-    enabled: status?.status === 'approved'
+    enabled: !!address && status?.status === 'approved'
   })
 
   useEffect(() => {
