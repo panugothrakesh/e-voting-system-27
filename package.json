@@ -9,19 +9,33 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "@tailwindcss/forms": "^0.5.10",
+    "@tanstack/react-query": "5.0.0",
+    "@wagmi/connectors": "^5.7.12",
+    "@wagmi/core": "^2.16.7",
+    "mongodb": "^6.3.0",
+    "mongoose": "^8.13.2",
+    "next": "15.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "next": "15.3.0"
+    "reown": "^1.1.4",
+    "viem": "2.7.12",
+    "wagmi": "2.5.7",
+    "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/mongodb": "^4.0.7",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4",
+    "autoprefixer": "^10.0.1",
     "eslint": "^9",
     "eslint-config-next": "15.3.0",
-    "@eslint/eslintrc": "^3"
+    "postcss": "^8",
+    "tailwindcss": "^4",
+    "typescript": "^5"
   }
 }
