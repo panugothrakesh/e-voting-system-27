@@ -67,6 +67,7 @@ const RegistrationForm = () => {
   const [showVoteConfirmation, setShowVoteConfirmation] = useState(false)
   const router = useRouter()
   const [votedCandidates, setVotedCandidates] = useState<Record<string, boolean>>({})
+  const [electionVotingStatus, setElectionVotingStatus] = useState<Record<string, boolean>>({})
 
   const { data: status, isLoading, refetch } = useQuery<RegistrationStatus>({
     queryKey: ['voterStatus', address],
@@ -90,11 +91,74 @@ const RegistrationForm = () => {
     enabled: !!address && status?.status === 'approved'
   })
 
-  const handleCandidateClick = (election: Election, candidate: Candidate) => {
-    setSelectedElection(election);
-    setSelectedCandidate(candidate);
-    setShowVoteConfirmation(true);
+  // Add a new function to check if the user has voted in the database
+  const checkElectionVotingStatus = async () => {
+    if (!address || !elections?.length) return;
+    
+    try {
+      // First check localStorage for any voted elections
+      const votedElectionsInStorage = Object.keys(votedCandidates)
+        .filter(key => votedCandidates[key])
+        .map(key => key.split('_')[0]);
+      
+      console.log('Elections voted in according to localStorage:', votedElectionsInStorage);
+      
+      // Then check the database
+      const response = await fetch(`/api/voter/voting-status?address=${address}`);
+      const data = await response.json();
+      
+      if (response.ok && data.votedElections) {
+        console.log('Elections voted in according to database:', data.votedElections);
+        
+        // Combine the results from localStorage and database
+        const votedElectionsSet = new Set([
+          ...votedElectionsInStorage,
+          ...(data.votedElections || [])
+        ]);
+        
+        // Create a status map for each election
+        const statusMap: Record<string, boolean> = {};
+        
+        elections.forEach(election => {
+          statusMap[election._id] = votedElectionsSet.has(election._id);
+        });
+        
+        console.log('Combined voting status:', statusMap);
+        setElectionVotingStatus(statusMap);
+        
+        // Also update localStorage if we found votes in the database that weren't in localStorage
+        const updatedVotedCandidates = { ...votedCandidates };
+        
+        data.votedElections?.forEach((electionId: string) => {
+          // If we have this election's vote in the database but not localStorage,
+          // add a generic entry for this election
+          if (!votedElectionsInStorage.includes(electionId)) {
+            const election = elections.find(e => e._id === electionId);
+            if (election && election.candidates.length > 0) {
+              // Create an entry using the first candidate
+              const key = `${electionId}_${election.candidates[0].address || 'unknown'}`;
+              updatedVotedCandidates[key] = true;
+            }
+          }
+        });
+        
+        // Update localStorage and state if we made changes
+        if (Object.keys(updatedVotedCandidates).length > Object.keys(votedCandidates).length) {
+          setVotedCandidates(updatedVotedCandidates);
+          localStorage.setItem('votedCandidates', JSON.stringify(updatedVotedCandidates));
+        }
+      }
+    } catch (error) {
+      console.error('Error checking voting status:', error);
+    }
   };
+
+  // Check the database for voting status when component mounts and elections are loaded
+  useEffect(() => {
+    if (mounted && address && elections?.length > 0) {
+      checkElectionVotingStatus();
+    }
+  }, [mounted, address, elections]);
 
   const handleVoteConfirmation = async () => {
     console.log('Vote confirmation initiated');
@@ -239,8 +303,14 @@ const RegistrationForm = () => {
     }
   }, [mounted]);
 
-  // Add a helper function to check if the user has voted in an election
+  // Enhanced function to check if the user has voted in an election
   const hasVotedInElection = (electionId: string) => {
+    // First check our database-synchronized status map
+    if (electionVotingStatus[electionId]) {
+      return true;
+    }
+    
+    // Then fall back to localStorage check
     if (!votedCandidates) return false;
     
     // Check if any key in votedCandidates starts with this election's ID
@@ -353,46 +423,16 @@ const RegistrationForm = () => {
                                     return;
                                   }
                                   
-                                  // Prepare transaction data
-                                  const functionSignature = '0x82c4a948'; // keccak256("voteByAddress(address)")
-                                  const paddedAddress = (candidate.address as string).slice(2).padStart(64, '0');
-                                  const txData = `${functionSignature}${paddedAddress}`;
+                                  // Call the voteByAddress function with the correct contract address
+                                  const result = await voteByAddress(
+                                    election.contractAddress as `0x${string}`,
+                                    candidate.address as `0x${string}`
+                                  );
                                   
-                                  debugLog("Preparing Transaction", {
-                                    functionSignature,
-                                    paddedAddress,
-                                    txData,
-                                    contractAddress: election.contractAddress,
-                                    yourWallet: address
+                                  debugLog("Vote Transaction Result", { 
+                                    txHash: result.txHash,
+                                    success: result.success
                                   });
-                                  
-                                  // Request accounts from wallet
-                                  if (!window.ethereum) {
-                                    throw new Error("MetaMask not installed");
-                                  }
-                                  
-                                  const accounts = await window.ethereum.request({
-                                    method: 'eth_requestAccounts'
-                                  });
-                                  
-                                  if (!accounts || accounts.length === 0) {
-                                    throw new Error("No accounts connected");
-                                  }
-                                  
-                                  debugLog("MetaMask Connected", { accounts });
-                                  
-                                  // Send raw transaction directly
-                                  const txHash = await window.ethereum.request({
-                                    method: 'eth_sendTransaction',
-                                    params: [{
-                                      from: accounts[0],
-                                      to: election.contractAddress,
-                                      data: txData,
-                                      gas: '0x30D40', // 200,000 gas
-                                    }]
-                                  });
-                                  
-                                  debugLog("Transaction Submitted", { txHash });
                                   
                                   // Mark this candidate as voted for
                                   setVotedCandidates(prev => ({
@@ -409,18 +449,23 @@ const RegistrationForm = () => {
                                     console.error("Failed to save voted state:", e);
                                   }
                                   
-                                  console.log(`Vote successful! Transaction hash: ${txHash}`);
+                                  alert(`Vote cast successfully! Transaction hash: ${result.txHash}`);
                                 } catch (error) {
                                   debugLog("Voting Failed", { 
                                     error: error instanceof Error ? error.message : String(error),
                                     errorObject: String(error)
                                   });
-                                  console.error("Voting failed:", error instanceof Error ? error.message : String(error));
+                                  
+                                  if (error instanceof Error) {
+                                    alert('Error casting vote: ' + error.message);
+                                  } else {
+                                    alert('An unexpected error occurred while casting your vote');
+                                  }
                                 } finally {
                                   setIsSubmitting(false);
                                 }
                               }}
-                              className="mt-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 w-full"
+                              className="mt-2 bg-blue-600 text-gray-900 px-4 py-2 rounded hover:bg-blue-700 w-full"
                               disabled={isSubmitting}
                             >
                               {isSubmitting ? 'Processing...' : 'Vote'}
@@ -447,7 +492,7 @@ const RegistrationForm = () => {
           </p>
           <button
             onClick={() => setShowReapplyForm(true)}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700"
+            className="w-full bg-blue-600 text-gray-900 py-2 px-4 rounded-md hover:bg-blue-700"
           >
             Reapply
           </button>
@@ -495,7 +540,7 @@ const RegistrationForm = () => {
                 console.log("Confirm vote button clicked");
                 handleVoteConfirmation();
               }}
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="px-4 py-2 bg-blue-600 text-gray-900 rounded hover:bg-blue-700"
               disabled={isSubmitting}
             >
               {isSubmitting ? 'Processing...' : 'Confirm Vote'}
@@ -565,7 +610,7 @@ const RegistrationForm = () => {
                   
                   console.log("Raw transaction data:", {
                     from: accounts[0],
-                    to: selectedElection.contractAddress,
+                    to: selectedCandidate.address,
                     data: txData
                   });
                   
@@ -574,7 +619,7 @@ const RegistrationForm = () => {
                     method: 'eth_sendTransaction',
                     params: [{
                       from: accounts[0],
-                      to: selectedElection.contractAddress,
+                      to: selectedCandidate.address,
                       data: txData,
                       gas: '0x30D40', // 200,000 gas
                     }]
@@ -661,7 +706,7 @@ const RegistrationForm = () => {
         </div>
         <button
           type="submit"
-          className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700"
+          className="w-full bg-blue-600 text-gray-900 py-2 px-4 rounded-md hover:bg-blue-700"
         >
           {showReapplyForm ? 'Reapply for Registration' : 'Submit Registration'}
         </button>

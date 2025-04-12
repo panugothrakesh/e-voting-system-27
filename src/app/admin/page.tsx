@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { createElection, registerCandidate, getVotesByAddress, getFactoryContract, getAllCandidates } from '@/utils/contract'
+import { createElection, registerCandidate, getVotesByAddress, getFactoryContract, getAllCandidates, endVotingAndDeclareWinner, getWinner, isVotingActive, isWinnerDeclared } from '@/utils/contract'
 import { useWallet } from '@/store/useStore'
 import { BaseError } from 'viem'
 import { config } from '@/config/wagmi'
@@ -48,6 +48,34 @@ export default function AdminDashboard() {
 
   // Add a new loading state for refreshing votes
   const [refreshingVotes, setRefreshingVotes] = useState<Record<string, boolean>>({})
+
+  const [contractState, setContractState] = useState<{
+    candidates: { address: string; name: string; votes: number }[];
+    loading: boolean;
+    error: string | null;
+  }>({
+    candidates: [],
+    loading: false,
+    error: null
+  });
+
+  const [candidatesList, setCandidatesList] = useState<{
+    candidates: { address: string; name: string }[];
+    loading: boolean;
+    error: string | null;
+  }>({
+    candidates: [],
+    loading: false,
+    error: null
+  });
+
+  const [endingElection, setEndingElection] = useState<Record<string, boolean>>({})
+  const [winnerInfo, setWinnerInfo] = useState<Record<string, {
+    address: string;
+    name: string;
+    votes: number;
+    error?: string;
+  }>>({})
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -260,6 +288,27 @@ export default function AdminDashboard() {
       
       console.log(`Retrieved ${votes} votes for candidate ${candidate.name} (${formattedCandidateAddress})`);
       
+      // If votes are 0, check if this is expected
+      if (votes === 0) {
+        // Check if the candidate has any votes in the database
+        const currentCandidate = election.candidates.find(
+          c => c.address.toLowerCase() === formattedCandidateAddress.toLowerCase()
+        );
+        
+        if (currentCandidate && currentCandidate.votes > 0) {
+          console.warn('Contract shows 0 votes but database shows votes exist. This could indicate:');
+          console.warn('1. The contract address might be incorrect');
+          console.warn('2. The candidate might be registered in a different contract');
+          console.warn('3. There might be a delay in blockchain state updates');
+          
+          if (confirm(`Warning: Contract shows 0 votes but database shows ${currentCandidate.votes} votes. This could indicate an issue with the contract address or a delay in blockchain updates. Would you like to keep the current vote count?`)) {
+            // User wants to keep current votes
+            setRefreshingVotes(prev => ({ ...prev, [candidateKey]: false }));
+            return;
+          }
+        }
+      }
+      
       // Update the candidate's votes in the database
       const response = await fetch(`/api/admin/elections/${election._id}/candidates/${index}/votes`, {
         method: 'PATCH',
@@ -276,8 +325,12 @@ export default function AdminDashboard() {
       // Refetch elections to update UI
       refetch();
       
-      // Show success message
-      alert(`Successfully refreshed votes for ${candidate.name}. Current count: ${votes}`);
+      // Show success message with more context
+      const message = votes === 0 
+        ? `Successfully refreshed votes for ${candidate.name}. The contract shows 0 votes. This could be because:\n1. No one has voted yet\n2. There might be a delay in blockchain updates\n3. The contract address might need verification`
+        : `Successfully refreshed votes for ${candidate.name}. Current count: ${votes}`;
+      
+      alert(message);
       
     } catch (error) {
       console.error('Error refreshing votes:', error);
@@ -395,6 +448,206 @@ After updating the address, you'll be able to refresh votes and register candida
     }
   };
 
+  const checkContractState = async (election: Election) => {
+    if (!election.contractAddress) {
+      setContractState(prev => ({ ...prev, error: 'No contract address found' }));
+      return;
+    }
+
+    setContractState(prev => ({ ...prev, loading: true, error: null }));
+    
+    try {
+      console.log('Checking contract state for election:', election.title);
+      console.log('Contract address:', election.contractAddress);
+      
+      const contractAddress = election.contractAddress as `0x${string}`;
+      
+      // Get all candidates from the contract
+      const candidates = await getAllCandidates(contractAddress);
+      console.log('Candidates from contract:', candidates);
+      
+      // Get votes for each candidate
+      const candidatesWithVotes = await Promise.all(
+        candidates.map(async (candidate) => {
+          const votes = await getVotesByAddress(contractAddress, candidate.address);
+          return {
+            ...candidate,
+            votes: Number(votes)
+          };
+        })
+      );
+      
+      console.log('Candidates with votes:', candidatesWithVotes);
+      
+      setContractState({
+        candidates: candidatesWithVotes,
+        loading: false,
+        error: null
+      });
+      
+    } catch (error) {
+      console.error('Error checking contract state:', error);
+      setContractState(prev => ({
+        ...prev,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to check contract state'
+      }));
+    }
+  };
+
+  const getContractCandidates = async (election: Election) => {
+    if (!election.contractAddress) {
+      setCandidatesList(prev => ({ ...prev, error: 'No contract address found' }));
+      return;
+    }
+
+    setCandidatesList(prev => ({ ...prev, loading: true, error: null }));
+    
+    try {
+      console.log('Getting candidates for election:', election.title);
+      console.log('Contract address:', election.contractAddress);
+      
+      const contractAddress = election.contractAddress as `0x${string}`;
+      const candidates = await getAllCandidates(contractAddress);
+      
+      console.log('Candidates from contract:', candidates);
+      
+      setCandidatesList({
+        candidates,
+        loading: false,
+        error: null
+      });
+      
+    } catch (error) {
+      console.error('Error getting candidates:', error);
+      setCandidatesList(prev => ({
+        ...prev,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to get candidates'
+      }));
+    }
+  };
+
+  // Add function to end voting and declare a winner
+  const handleEndElection = async (election: Election) => {
+    if (!election.contractAddress) {
+      alert(`Election ${election.title} has no contract address`);
+      return;
+    }
+    
+    // Confirm with admin before ending the election
+    if (!confirm(`Are you sure you want to end the election "${election.title}" and declare a winner? This action cannot be undone.`)) {
+      return;
+    }
+    
+    // Set loading state
+    setEndingElection(prev => ({ ...prev, [election._id]: true }));
+    
+    try {
+      console.log(`Ending election: ${election.title}`);
+      console.log(`Contract address: ${election.contractAddress}`);
+      
+      // First check if voting is active
+      const isActive = await isVotingActive(election.contractAddress);
+      if (!isActive) {
+        alert(`Voting is already closed for "${election.title}".`);
+        
+        // If voting is already ended, try to get the winner
+        await fetchWinner(election);
+        return;
+      }
+      
+      // Call the contract function to end voting and declare winner
+      await endVotingAndDeclareWinner(election.contractAddress as `0x${string}`);
+      
+      // Update the election status in the database
+      const response = await fetch(`/api/admin/elections/${election._id}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isActive: false }),
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to update election status in database');
+      }
+      
+      alert(`Election "${election.title}" has been ended successfully.`);
+      
+      // Fetch and display the winner
+      await fetchWinner(election);
+      
+      // Refresh the elections data
+      refetch();
+    } catch (error) {
+      console.error('Error ending election:', error);
+      
+      let errorMessage = 'Unknown error occurred';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      alert(`Error ending election: ${errorMessage}`);
+      
+      // Update winner state with error
+      setWinnerInfo(prev => ({
+        ...prev,
+        [election._id]: {
+          ...prev[election._id],
+          error: errorMessage
+        }
+      }));
+    } finally {
+      setEndingElection(prev => ({ ...prev, [election._id]: false }));
+    }
+  };
+  
+  // Function to fetch the winner information
+  const fetchWinner = async (election: Election) => {
+    if (!election.contractAddress) return;
+    
+    try {
+      console.log(`Fetching winner for election: ${election.title}`);
+      
+      // Check if winner has been declared
+      const winnerDeclared = await isWinnerDeclared(election.contractAddress);
+      if (!winnerDeclared) {
+        throw new Error('Winner has not been declared yet. End the election first.');
+      }
+      
+      // Get the winner information
+      const winner = await getWinner(election.contractAddress);
+      console.log('Winner information:', winner);
+      
+      // Update state with winner info
+      setWinnerInfo(prev => ({
+        ...prev,
+        [election._id]: {
+          address: winner.address,
+          name: winner.name,
+          votes: winner.votes
+        }
+      }));
+    } catch (error) {
+      console.error('Error fetching winner:', error);
+      
+      let errorMessage = 'Unknown error occurred';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+      
+      // Update winner state with error
+      setWinnerInfo(prev => ({
+        ...prev,
+        [election._id]: {
+          ...prev[election._id],
+          error: errorMessage
+        }
+      }));
+    }
+  };
+
   if (isLoading) {
     return <div className="text-center py-8">Loading...</div>
   }
@@ -408,7 +661,7 @@ After updating the address, you'll be able to refresh votes and register candida
         <div className="mb-4">
           <button 
             onClick={debugContracts}
-            className="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+            className="px-4 py-2 bg-gray-600 text-gray-900 rounded-md hover:bg-gray-700"
           >
             Debug Contracts
           </button>
@@ -448,7 +701,7 @@ After updating the address, you'll be able to refresh votes and register candida
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
+              className="w-full bg-blue-600 text-gray-900 py-2 px-4 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               {isLoading ? 'Creating...' : 'Create Election'}
             </button>
@@ -485,7 +738,7 @@ After updating the address, you'll be able to refresh votes and register candida
               <button
                 type="submit"
                 disabled={isLoading}
-                className="w-full bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                className="w-full bg-green-600 text-gray-900 py-2 px-4 rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Adding...' : 'Add Candidate'}
               </button>
@@ -515,7 +768,7 @@ After updating the address, you'll be able to refresh votes and register candida
                 <div className="flex space-x-2">
                   <button
                     onClick={() => setSelectedElection(election)}
-                    className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    className="px-3 py-1 bg-blue-600 text-gray-900 rounded-md hover:bg-blue-700"
                   >
                     Add Candidate
                   </button>
@@ -526,6 +779,41 @@ After updating the address, you'll be able to refresh votes and register candida
                   </span>
                 </div>
               </div>
+
+              {/* Add End Election button */}
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => handleEndElection(election)}
+                  className={`px-4 py-2 bg-red-600 text-gray-900 rounded-md hover:bg-red-700 ${
+                    endingElection[election._id] || !election.isActive ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}
+                  disabled={endingElection[election._id] || !election.isActive}
+                >
+                  {endingElection[election._id] ? 'Ending Election...' : 'End Election & Declare Winner'}
+                </button>
+              </div>
+
+              {/* Display winner information if available */}
+              {winnerInfo[election._id] && (
+                <div className={`mt-4 p-4 rounded ${
+                  winnerInfo[election._id].error 
+                    ? 'bg-red-50 border border-red-200' 
+                    : 'bg-green-50 border border-green-200'
+                }`}>
+                  <h4 className="font-semibold text-lg mb-2 text-gray-900">
+                    {winnerInfo[election._id].error ? 'Error Getting Winner' : 'Election Winner'}
+                  </h4>
+                  {winnerInfo[election._id].error ? (
+                    <p className="text-red-600">{winnerInfo[election._id].error}</p>
+                  ) : (
+                    <div>
+                      <p className="font-medium text-green-800">{winnerInfo[election._id].name}</p>
+                      <p className="text-sm text-gray-700">Address: {winnerInfo[election._id].address}</p>
+                      <p className="text-sm font-semibold mt-1">Votes: {winnerInfo[election._id].votes}</p>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {election.candidates.length > 0 && (
                 <div className="mt-4">
@@ -545,7 +833,7 @@ After updating the address, you'll be able to refresh votes and register candida
                             <span className="text-lg font-semibold text-gray-900">{candidate.votes} votes</span>
                             <button
                               onClick={() => refreshCandidateVotes(election, candidate, index)}
-                              className={`px-3 py-1 bg-green-600 text-white rounded-md hover:bg-green-700 ${isRefreshing ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              className={`px-3 py-1 bg-green-600 text-gray-900 rounded-md hover:bg-green-700 ${isRefreshing ? 'opacity-50 cursor-not-allowed' : ''}`}
                               disabled={isRefreshing}
                             >
                               {isRefreshing ? 'Refreshing...' : 'Refresh Votes'}
@@ -557,6 +845,75 @@ After updating the address, you'll be able to refresh votes and register candida
                   </div>
                 </div>
               )}
+
+              <div className="mt-4">
+                <button
+                  onClick={() => checkContractState(election)}
+                  className="px-4 py-2 bg-blue-600 text-gray-900 rounded-md hover:bg-blue-700"
+                >
+                  Check Contract State
+                </button>
+                
+                {contractState.loading && (
+                  <div className="mt-2 text-gray-600">Loading contract state...</div>
+                )}
+                
+                {contractState.error && (
+                  <div className="mt-2 text-red-600">{contractState.error}</div>
+                )}
+                
+                {contractState.candidates.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="font-semibold mb-2">Contract State:</h4>
+                    <div className="space-y-2">
+                      {contractState.candidates.map((candidate, index) => (
+                        <div key={index} className="p-2 bg-gray-50 rounded">
+                          <div className="flex justify-between">
+                            <span className="font-medium">{candidate.name}</span>
+                            <span>{candidate.votes} votes</span>
+                          </div>
+                          <div className="text-sm text-gray-500 break-all">
+                            Address: {candidate.address}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4">
+                <button
+                  onClick={() => getContractCandidates(election)}
+                  className="px-4 py-2 bg-blue-600 text-gray-900 rounded-md hover:bg-blue-700"
+                >
+                  Get Contract Candidates
+                </button>
+                
+                {candidatesList.loading && (
+                  <div className="mt-2 text-gray-600">Loading candidates...</div>
+                )}
+                
+                {candidatesList.error && (
+                  <div className="mt-2 text-red-600">{candidatesList.error}</div>
+                )}
+                
+                {candidatesList.candidates.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="font-semibold mb-2">Contract Candidates:</h4>
+                    <div className="space-y-2">
+                      {candidatesList.candidates.map((candidate, index) => (
+                        <div key={index} className="p-2 bg-gray-50 rounded">
+                          <div className="font-medium">{candidate.name}</div>
+                          <div className="text-sm text-gray-500 break-all">
+                            Address: {candidate.address}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>

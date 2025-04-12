@@ -134,7 +134,7 @@ export default function AdminLayout({
                     <span className="text-sm text-gray-600">{shortenAddress(address)}</span>
                     <button
                       onClick={handleDisconnect}
-                      className="bg-red-500 text-white px-3 py-1 rounded-lg text-sm hover:bg-red-600 transition-colors"
+                      className="bg-red-500 text-gray-900 px-3 py-1 rounded-lg text-sm hover:bg-red-600 transition-colors"
                     >
                       Disconnect
                     </button>
@@ -144,7 +144,7 @@ export default function AdminLayout({
                     <span className="text-xs text-gray-600">{shortenAddress(address)}</span>
                     <button
                       onClick={handleDisconnect}
-                      className="bg-red-500 text-white p-1 rounded-lg text-xs hover:bg-red-600 transition-colors"
+                      className="bg-red-500 text-gray-900 p-1 rounded-lg text-xs hover:bg-red-600 transition-colors"
                     >
                       DC
                     </button>

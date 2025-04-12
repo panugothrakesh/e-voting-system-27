@@ -13,6 +13,16 @@ interface Election {
   isActive: boolean
 }
 
+interface ElectionApproval {
+  electionId: string
+  status: 'approved' | 'rejected'
+  contractAddress: string
+  approvedAt?: string
+  rejectedAt?: string
+  isWhitelisted: boolean
+  ethTxHash?: string
+}
+
 interface Voter {
   _id: string
   encryptedAddress: string
@@ -26,6 +36,7 @@ interface Voter {
   physicalAddress: string
   status: 'pending' | 'approved' | 'rejected'
   createdAt: string
+  electionApprovals?: ElectionApproval[]
 }
 
 export default function VoterApprovalPage() {
@@ -53,9 +64,19 @@ export default function VoterApprovalPage() {
     }
   })
 
-  const handleApproveSimple = async (voter: Voter, action: 'approve' | 'reject') => {
+  // Helper function to check if a voter is approved for a specific election
+  const getVoterStatusForElection = (voter: Voter, electionId: string): 'pending' | 'approved' | 'rejected' => {
+    if (!voter.electionApprovals || voter.electionApprovals.length === 0) {
+      return 'pending'
+    }
+    
+    const approval = voter.electionApprovals.find(a => a.electionId === electionId)
+    return approval ? approval.status : 'pending'
+  }
+
+  const handleApproveForElection = async (voter: Voter, action: 'approve' | 'reject') => {
     try {
-      console.log('Voter approval function called', { voter, action })
+      console.log('Voter approval function called', { voter, action, electionId: selectedElection })
       setIsProcessing(true)
       setError(null)
       
@@ -129,7 +150,7 @@ export default function VoterApprovalPage() {
 
       await refetch()
       setSelectedVoter(null)
-      alert(`Voter ${action}ed successfully!`)
+      alert(`Voter ${action}ed successfully for the selected election!`)
     } catch (error) {
       console.error('Error updating voter status:', error)
       setError(error instanceof Error ? error.message : 'Failed to update voter status')
@@ -197,7 +218,10 @@ export default function VoterApprovalPage() {
                   Encrypted Wallet Address
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                  Status
+                  Overall Status
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Selected Election Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                   Actions
@@ -224,6 +248,19 @@ export default function VoterApprovalPage() {
                       {voter.status}
                     </span>
                   </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {selectedElection ? (
+                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        getVoterStatusForElection(voter, selectedElection) === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                        getVoterStatusForElection(voter, selectedElection) === 'approved' ? 'bg-green-100 text-green-800' :
+                        'bg-red-100 text-red-800'
+                      }`}>
+                        {getVoterStatusForElection(voter, selectedElection)}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 text-xs">No election selected</span>
+                    )}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     <button
                       onClick={() => setSelectedVoter(voter)}
@@ -231,25 +268,32 @@ export default function VoterApprovalPage() {
                     >
                       View Details
                     </button>
-                    {voter.status === 'pending' && (
+                    {selectedElection && (
                       <>
                         <button
-                          onClick={() => {
-                            console.log("APPROVE BUTTON CLICKED - Using simple function", voter.firstName);
-                            handleApproveSimple(voter, 'approve');
-                          }}
-                          className="bg-green-500 text-white font-bold px-4 py-2 rounded-md hover:bg-green-600"
+                          onClick={() => handleApproveForElection(voter, 'approve')}
+                          disabled={isProcessing || getVoterStatusForElection(voter, selectedElection) === 'approved'}
+                          className={`bg-green-500 text-gray-900 font-bold px-4 py-2 rounded-md hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed ${
+                            getVoterStatusForElection(voter, selectedElection) === 'approved' ? 'opacity-50 cursor-not-allowed' : ''
+                          }`}
+                          title={getVoterStatusForElection(voter, selectedElection) === 'approved' ? 'Already approved for this election' : ''}
                         >
-                          ✅ APPROVE & WHITELIST
+                          {isProcessing ? 'Processing...' : '✅ APPROVE FOR ELECTION'}
                         </button>
                         <button
-                          onClick={() => handleApproveSimple(voter, 'reject')}
-                          disabled={isProcessing}
-                          className="bg-red-500 text-white font-bold px-4 py-2 rounded-md ml-2 hover:bg-red-600 disabled:opacity-50"
+                          onClick={() => handleApproveForElection(voter, 'reject')}
+                          disabled={isProcessing || getVoterStatusForElection(voter, selectedElection) === 'rejected'}
+                          className={`bg-red-500 text-gray-900 font-bold px-4 py-2 rounded-md ml-2 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed ${
+                            getVoterStatusForElection(voter, selectedElection) === 'rejected' ? 'opacity-50 cursor-not-allowed' : ''
+                          }`}
+                          title={getVoterStatusForElection(voter, selectedElection) === 'rejected' ? 'Already rejected for this election' : ''}
                         >
-                          {isProcessing ? 'Processing...' : '❌ REJECT'}
+                          {isProcessing ? 'Processing...' : '❌ REJECT FOR ELECTION'}
                         </button>
                       </>
+                    )}
+                    {!selectedElection && (
+                      <span className="text-amber-500 font-semibold">Please select an election first</span>
                     )}
                   </td>
                 </tr>
@@ -259,45 +303,93 @@ export default function VoterApprovalPage() {
         </div>
       )}
 
+      {/* Voter details modal */}
       {selectedVoter && (
-        <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center">
-          <div className="bg-white rounded-lg p-6 max-w-2xl w-full">
-            <h2 className="text-lg font-medium text-gray-900 mb-4">Voter Details</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Name</label>
-                <div className="mt-1 text-sm text-gray-900">
-                  {selectedVoter.firstName} {selectedVoter.lastName}
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg w-full max-w-2xl overflow-auto max-h-screen">
+            <div className="p-6">
+              <h2 className="text-xl font-bold text-gray-900 mb-4">Voter Details</h2>
+              
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-lg font-semibold mb-2">Personal Information</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-500">Name</p>
+                      <p className="text-gray-900">{selectedVoter.firstName} {selectedVoter.lastName}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Phone Number</p>
+                      <p className="text-gray-900">{selectedVoter.phoneNumber}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Country</p>
+                      <p className="text-gray-900">{selectedVoter.country}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">Physical Address</p>
+                      <p className="text-gray-900">{selectedVoter.physicalAddress}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold mb-2">Blockchain Information</h3>
+                  <div>
+                    <p className="text-sm text-gray-500">Wallet Address (Encrypted)</p>
+                    <p className="text-gray-900 break-all">{selectedVoter.encryptedAddress}</p>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold mb-2">Election Approvals</h3>
+                  {selectedVoter.electionApprovals && selectedVoter.electionApprovals.length > 0 ? (
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Election</th>
+                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
+                          <th className="px-4 py-2 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">Date</th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {selectedVoter.electionApprovals.map((approval) => {
+                          const election = elections.find(e => e._id === approval.electionId);
+                          return (
+                            <tr key={approval.electionId}>
+                              <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900">
+                                {election ? election.title : 'Unknown Election'}
+                              </td>
+                              <td className="px-4 py-2 whitespace-nowrap">
+                                <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                                  approval.status === 'approved' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                                }`}>
+                                  {approval.status}
+                                </span>
+                              </td>
+                              <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-500">
+                                {approval.approvedAt ? new Date(approval.approvedAt).toLocaleDateString() : 
+                                 approval.rejectedAt ? new Date(approval.rejectedAt).toLocaleDateString() : 'N/A'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-gray-500">No election approvals yet</p>
+                  )}
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Encrypted Wallet Address</label>
-                <div className="mt-1 text-sm text-gray-900">{selectedVoter.displayAddress}</div>
+
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => setSelectedVoter(null)}
+                  className="bg-gray-200 text-gray-800 font-bold px-4 py-2 rounded-md hover:bg-gray-300"
+                >
+                  Close
+                </button>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Aadhar Number</label>
-                <div className="mt-1 text-sm text-gray-900">{selectedVoter.aadhar}</div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Phone Number</label>
-                <div className="mt-1 text-sm text-gray-900">{selectedVoter.phoneNumber}</div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Country</label>
-                <div className="mt-1 text-sm text-gray-900">{selectedVoter.country}</div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Physical Address</label>
-                <div className="mt-1 text-sm text-gray-900">{selectedVoter.physicalAddress}</div>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button
-                onClick={() => setSelectedVoter(null)}
-                className="bg-gray-200 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-300"
-              >
-                Close
-              </button>
             </div>
           </div>
         </div>

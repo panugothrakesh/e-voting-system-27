@@ -1,267 +1,183 @@
-import { NextResponse } from 'next/server'
-import clientPromise from '@/lib/mongodb'
+import { NextRequest, NextResponse } from 'next/server'
+import { connectToDatabase } from '@/lib/mongodb'
 import { decryptAddress } from '@/utils/crypto'
 import { ObjectId } from 'mongodb'
-import { createWalletClient, http, parseEther } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
-import { sepolia } from 'viem/chains'
+import { sendEth } from '@/utils/contractUtils'
 
-// Environment variables for admin wallet
-const ADMIN_PRIVATE_KEY = process.env.ADMIN_PRIVATE_KEY || ''
-
-// Create admin wallet account if private key is available
-const getAdminAccount = () => {
-  if (!ADMIN_PRIVATE_KEY) {
-    console.warn('No admin private key available for blockchain interactions')
-    return null
-  }
+export async function POST(
+  request: NextRequest
+) {
   try {
-    // Format the private key correctly - it should be 0x followed by 64 hex characters
-    let formattedPrivateKey = ADMIN_PRIVATE_KEY
-    
-    // Remove 0x prefix if it exists
-    if (formattedPrivateKey.startsWith('0x')) {
-      formattedPrivateKey = formattedPrivateKey.substring(2)
-    }
-    
-    // Ensure it's 64 characters (32 bytes)
-    if (formattedPrivateKey.length !== 64) {
-      console.error(`Invalid private key length: ${formattedPrivateKey.length} characters. Expected 64.`)
-      return null
-    }
-    
-    // Add 0x prefix back for privateKeyToAccount
-    console.log('Creating admin account from private key')
-    return privateKeyToAccount(`0x${formattedPrivateKey}`)
-  } catch (error) {
-    console.error('Error creating admin account:', error)
-    return null
-  }
-}
+    const { walletAddress, action, electionId, electionContractAddress } = await request.json()
 
-// Function to send some ETH to the voter for gas fees
-async function sendEthForGasFees(recipientAddress: string): Promise<{success: boolean, txHash?: string, error?: string}> {
-  try {
-    if (!ADMIN_PRIVATE_KEY) {
-      console.warn('No admin private key set. Cannot send ETH for gas fees.')
-      return { success: false, error: 'Admin wallet not configured' }
-    }
-
-    console.log(`Attempting to send ETH to approved voter: ${recipientAddress}`)
-    
-    const account = getAdminAccount()
-    if (!account) {
-      return { success: false, error: 'Failed to create admin account' }
-    }
-    
-    // Use public RPC endpoints that don't require authentication
-    const publicRpcEndpoints = [
-      'https://eth-sepolia.public.blastapi.io',
-      'https://sepolia.gateway.tenderly.co',
-      'https://rpc.sepolia.org',
-      'https://rpc2.sepolia.org'
-    ]
-    
-    // Try each endpoint until one works
-    let lastError = '';
-    for (const rpcUrl of publicRpcEndpoints) {
-      try {
-        console.log(`Trying RPC endpoint: ${rpcUrl}`)
-        const walletClient = createWalletClient({
-          account,
-          chain: sepolia,
-          transport: http(rpcUrl)
-        })
-        
-        // Send a small amount of ETH (0.001) for gas fees
-        const txHash = await walletClient.sendTransaction({
-          to: recipientAddress as `0x${string}`,
-          value: parseEther('0.001')
-        })
-        
-        console.log(`Successfully sent 0.001 ETH to ${recipientAddress}. Transaction hash: ${txHash}`)
-        return { success: true, txHash: txHash }
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : String(e)
-        console.error(`Error with RPC ${rpcUrl}:`, lastError)
-        // Continue to try next endpoint
-      }
-    }
-    
-    // If we get here, all RPC endpoints failed
-    return { success: false, error: `All RPC endpoints failed. Last error: ${lastError}` }
-  } catch (error) {
-    console.error('Error sending ETH for gas fees:', error)
-    return { 
-      success: false, 
-      error: error instanceof Error ? error.message : 'Unknown error sending ETH' 
-    }
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    console.log('Voter approval API called')
-    const body = await request.json()
-    console.log('Request body received:', body)
-    const { walletAddress, action, electionContractAddress, electionId } = body
-
-    if (!walletAddress || !action) {
-      console.log('Missing required fields')
+    if (!walletAddress) {
       return NextResponse.json(
-        { error: 'Wallet address and action are required' },
+        { error: 'Wallet address is required' },
         { status: 400 }
       )
     }
 
-    if (!['approve', 'reject'].includes(action)) {
-      console.log('Invalid action:', action)
+    if (!action || (action !== 'approve' && action !== 'reject')) {
       return NextResponse.json(
-        { error: 'Invalid action. Must be either "approve" or "reject"' },
+        { error: 'Action must be either approve or reject' },
         { status: 400 }
       )
     }
 
-    // For approve action, validate election details
+    // Require electionId and electionContractAddress when approving
+    if (action === 'approve' && (!electionId || !electionContractAddress)) {
+      return NextResponse.json(
+        { error: 'Election ID and contract address are required for approval' },
+        { status: 400 }
+      )
+    }
+
+    // Get the decrypted wallet address for sending ETH (if approving)
+    let recipientAddress: string | null = null
     if (action === 'approve') {
-      if (!electionId) {
-        console.log('Missing election ID for approval')
+      try {
+        recipientAddress = decryptAddress(walletAddress)
+        console.log('Decrypted address for ETH transfer:', recipientAddress)
+        
+        if (!recipientAddress || !recipientAddress.startsWith('0x')) {
+          console.error('Failed to decrypt address or invalid format:', recipientAddress)
+          throw new Error('Invalid wallet address format')
+        }
+      } catch (error) {
+        console.error('Error decrypting address:', error)
         return NextResponse.json(
-          { error: 'Election ID is required for approval' },
-          { status: 400 }
+          { error: 'Failed to decrypt wallet address' },
+          { status: 500 }
         )
       }
     }
 
-    console.log('Connecting to MongoDB')
-    const client = await clientPromise
-    const db = client.db('e-voting')
-
+    const { db } = await connectToDatabase()
+    
     // Find the voter by encrypted address
-    console.log('Finding voter with encrypted address:', walletAddress)
-    const voter = await db.collection('voters').findOne({
-      encryptedAddress: walletAddress
+    const voter = await db.collection('voters').findOne({ 
+      encryptedAddress: walletAddress 
     })
-
+    
     if (!voter) {
-      console.log('Voter not found')
       return NextResponse.json(
         { error: 'Voter not found' },
         { status: 404 }
       )
     }
-    console.log('Voter found:', voter)
 
-    // For now, only database update - we'll add server-side blockchain interaction later
-    // when admin wallet can be properly configured with private key
-    let blockchainStatus = 'not_attempted';
-    let blockchainError = '';
+    const now = new Date()
     
-    // Prepare update document
-    const updateData: Record<string, string | boolean | Date | ObjectId> = { 
-      status: action === 'approve' ? 'approved' : 'rejected',
-      isWhitelisted: action === 'approve',
-      updatedAt: new Date().toISOString()
+    // Create or update the election approval status
+    const updateData: any = {
+      // Only update overall status if we're not doing per-election approval
+      ...(electionId ? {} : { status: action }),
     }
     
-    // Add election data for approved voters
-    if (action === 'approve' && electionId) {
-      console.log('Adding election data to voter:', { electionId, electionContractAddress })
-      updateData.approvedElectionId = new ObjectId(electionId)
-      updateData.approvedElectionContractAddress = electionContractAddress || ''
-    }
-
-    // Attempt blockchain interaction - disabled for now, would need proper server wallet
-    // This is just a placeholder showing how it would work if implemented
-    if (action === 'approve' && electionContractAddress) {
-      console.log('Server would handle blockchain interaction here');
-      // In production implementation, this would use the server's wallet to interact
-      // with the blockchain without requiring MetaMask from the user
+    // For per-election approval, add to electionApprovals array
+    if (electionId) {
+      // Each election approval entry will track: electionId, status, approvalDate, etc.
+      const electionApproval = {
+        electionId,
+        status: action,
+        contractAddress: electionContractAddress,
+        isWhitelisted: action === 'approve',
+        ...(action === 'approve' ? { approvedAt: now.toISOString() } : { rejectedAt: now.toISOString() })
+      }
       
-      try {
-        // Decrypt address for blockchain interaction
-        const decryptedAddress = decryptAddress(walletAddress);
-        console.log('Decrypted voter address:', decryptedAddress);
-        
-        // This is where the actual blockchain interaction would happen with a server wallet
-        // For now, just log what would have happened
-        console.log(`Would whitelist voter ${decryptedAddress} on contract ${electionContractAddress}`);
-        
-        // Comment out actual contract interaction until server wallet is configured
-        /*
-        await whitelistVoters(
-          electionContractAddress as `0x${string}`, 
-          [decryptedAddress as `0x${string}`]
-        );
-        */
-        
-        // Send some ETH to the voter for gas fees
-        if (decryptedAddress) {
-          console.log(`Sending some Sepolia ETH to voter for gas fees: ${decryptedAddress}`);
-          console.log(`Admin private key available: ${ADMIN_PRIVATE_KEY ? 'Yes (length: ' + ADMIN_PRIVATE_KEY.length + ')' : 'No'}`);
-          
-          const ethResult = await sendEthForGasFees(decryptedAddress);
-          
-          console.log(`ETH transfer result:`, {
-            success: ethResult.success,
-            txHash: ethResult.txHash || 'none',
-            error: ethResult.error || 'none'
-          });
-          
-          if (ethResult.success) {
-            console.log(`Successfully sent ETH to voter. Tx hash: ${ethResult.txHash}`);
-            // Add the transaction hash to the update data
-            if (ethResult.txHash) {
-              updateData.ethTxHash = ethResult.txHash;
-            }
-            blockchainStatus = 'success';
-          } else {
-            console.error(`Failed to send ETH to voter: ${ethResult.error}`);
-            blockchainError = ethResult.error || 'Unknown error sending ETH';
-            blockchainStatus = 'eth_transfer_failed';
-          }
+      // Check if this election is already in the approvals array
+      const existingApproval = voter.electionApprovals?.find((a: any) => 
+        a.electionId === electionId
+      )
+      
+      if (existingApproval) {
+        // Update existing approval
+        updateData['electionApprovals.$[elem]'] = {
+          ...existingApproval,
+          ...electionApproval
         }
         
-      } catch (error) {
-        console.error('Blockchain interaction would have failed:', error);
-        blockchainStatus = 'simulated_failure';
-        blockchainError = error instanceof Error ? error.message : String(error);
+        await db.collection('voters').updateOne(
+          { encryptedAddress: walletAddress },
+          { $set: updateData },
+          { 
+            arrayFilters: [{ 'elem.electionId': electionId }]
+          }
+        )
+      } else {
+        // Add new approval
+        updateData.$push = { electionApprovals: electionApproval }
+        
+        await db.collection('voters').updateOne(
+          { encryptedAddress: walletAddress },
+          updateData
+        )
       }
-    }
-
-    // Update the voter's status in the database
-    console.log('Updating voter status in database')
-    
-    console.log('Update data:', JSON.stringify(updateData, (key, value) => 
-      value instanceof ObjectId ? value.toString() : value
-    ))
-    
-    const result = await db.collection('voters').updateOne(
-      { encryptedAddress: walletAddress },
-      { $set: updateData }
-    )
-    console.log('Database update result:', result)
-
-    if (result.modifiedCount === 0) {
-      console.log('Failed to update database')
-      return NextResponse.json(
-        { error: 'Failed to update voter status' },
-        { status: 500 }
+      
+      // Also update the overall status based on the total approvals/rejections
+      const updatedVoter = await db.collection('voters').findOne({ 
+        encryptedAddress: walletAddress 
+      })
+      
+      if (updatedVoter && updatedVoter.electionApprovals?.length > 0) {
+        const hasApprovals = updatedVoter.electionApprovals.some((a: any) => a.status === 'approved')
+        
+        // If the voter has at least one approval, mark them as approved overall
+        // This is just for the global status indicator
+        if (hasApprovals && updatedVoter.status !== 'approved') {
+          await db.collection('voters').updateOne(
+            { encryptedAddress: walletAddress },
+            { $set: { status: 'approved' } }
+          )
+        }
+      }
+    } else {
+      // Legacy non-election-specific approval (update only overall status)
+      await db.collection('voters').updateOne(
+        { encryptedAddress: walletAddress },
+        { $set: updateData }
       )
     }
 
-    const successMessage = `Voter ${action}ed successfully in database. Blockchain status: ${blockchainStatus}`
-    console.log(successMessage)
-    return NextResponse.json({ 
-      success: true,
-      message: successMessage,
-      blockchainStatus,
-      blockchainError,
-      ethSent: blockchainStatus === 'success',
-      ethTxHash: updateData.ethTxHash || null
-    })
+    // If approving, send some ETH for gas
+    if (action === 'approve' && recipientAddress) {
+      try {
+        // Send a small amount of ETH to cover gas fees (adjust as needed)
+        // In production, this should check if they already have ETH
+        console.log(`Sending ETH to ${recipientAddress}...`)
+        
+        // Simulate blockchain interaction for now
+        const txHash = await sendEth(recipientAddress as `0x${string}`, '0.001')
+        
+        if (txHash) {
+          // Record the transaction in the database
+          await db.collection('voters').updateOne(
+            { encryptedAddress: walletAddress },
+            { 
+              $set: { 
+                ethTxHash: txHash,
+                ethSentAt: now.toISOString()
+              },
+              ...(electionId ? {
+                $set: { "electionApprovals.$[elem].ethTxHash": txHash }
+              } : {})
+            },
+            ...(electionId ? {
+              arrayFilters: [{ "elem.electionId": electionId }]
+            } : {})
+          )
+          
+          console.log(`ETH sent to ${recipientAddress}, tx: ${txHash}`)
+        }
+      } catch (ethError) {
+        // Log but continue - the voter is still approved even if ETH sending fails
+        console.error('Error sending ETH:', ethError)
+      }
+    }
+
+    return NextResponse.json({ success: true, action, electionId })
   } catch (error) {
-    console.error('Error in POST /api/admin/voters/approve:', error)
+    console.error('Error in voter approval API:', error)
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

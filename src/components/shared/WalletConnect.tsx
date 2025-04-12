@@ -17,7 +17,7 @@ export default function WalletConnect() {
           <span className="text-sm text-gray-700">{shortenAddress(address)}</span>
           <button
             onClick={() => disconnect()}
-            className="bg-red-500 text-white px-4 py-2 rounded-lg text-sm hover:bg-red-600 transition-colors"
+            className="bg-red-500 text-gray-900 px-4 py-2 rounded-lg text-sm hover:bg-red-600 transition-colors"
           >
             Disconnect
           </button>
@@ -25,7 +25,7 @@ export default function WalletConnect() {
       ) : (
         <button
           onClick={connect}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors"
+          className="bg-blue-600 text-gray-900 px-4 py-2 rounded-lg text-sm hover:bg-blue-700 transition-colors"
         >
           Connect Wallet
         </button>
