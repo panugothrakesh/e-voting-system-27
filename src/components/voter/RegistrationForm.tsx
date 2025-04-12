@@ -207,18 +207,53 @@ const RegistrationForm = () => {
       // Log the transaction
       console.log('Vote transaction succeeded:', result);
       
+      // Record the vote in the database
+      const response = await fetch('/api/voter/blockchain-vote', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contractAddress: selectedElection.contractAddress,
+          candidateAddress: selectedCandidate.address,
+          candidateName: selectedCandidate.name,
+          electionId: selectedElection._id,
+          txHash: result.txHash
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to record vote in database');
+      }
+
+      // Update local state to reflect the vote
+      const candidateKey = `${selectedElection._id}_${selectedCandidate.address}`;
+      const updatedVotedCandidates = { ...votedCandidates, [candidateKey]: true };
+      setVotedCandidates(updatedVotedCandidates);
+      localStorage.setItem('votedCandidates', JSON.stringify(updatedVotedCandidates));
+
+      // Update election voting status
+      const updatedElectionStatus = { ...electionVotingStatus, [selectedElection._id]: true };
+      setElectionVotingStatus(updatedElectionStatus);
+      
       // Reset the form
       setSelectedElection(null);
       setSelectedCandidate(null);
-      console.log('Vote successful! Transaction hash: ' + result);
+      console.log('Vote successful! Transaction hash: ' + result.txHash);
+      
+      // Show success message
+      alert('Your vote has been cast successfully!');
     } catch (error) {
       console.error('Error during voting:', error);
       
       // Display the error message
       if (error instanceof Error) {
         console.error("Voting failed:", error.message);
+        alert(`Voting failed: ${error.message}`);
       } else {
         console.error("Voting failed:", String(error));
+        alert('An unknown error occurred while voting');
       }
     } finally {
       setIsSubmitting(false);
@@ -342,6 +377,11 @@ const RegistrationForm = () => {
     if (status?.status === 'approved') {
       return (
         <div className="max-w-4xl mx-auto bg-white p-6 rounded-lg shadow">
+          <div className="mb-6 bg-green-100 text-green-800 p-4 rounded-md">
+            <h2 className="text-xl font-semibold mb-2">✓ Registration Approved</h2>
+            <p className="text-gray-700">You are now eligible to vote in active elections.</p>
+          </div>
+          
           <h2 className="text-2xl font-bold text-gray-900 mb-6">Active Elections</h2>
           
           {isLoadingElections ? (
@@ -372,33 +412,32 @@ const RegistrationForm = () => {
                     </div>
                   )}
                   
-                  {!hasVotedInElection(election._id) && <div className="space-y-4">
-                    <h4 className="font-medium">Candidates</h4>
-                    {election.candidates.map((candidate, index) => {
-                      // Create a unique key for this candidate
-                      const candidateKey = `${election._id}_${candidate.address}`;
-                      const hasVoted = votedCandidates[candidateKey];
-                      // Check if user has voted in this election at all
-                      const electionVoted = hasVotedInElection(election._id);
-                      
-                      return (
-                        <div key={index} className="border rounded p-3">
-                          <h5 className="font-medium">{candidate.name}</h5>
-                          <p className="text-gray-600">{candidate.description}</p>
-                          {hasVoted ? (
-                            <div className="mt-2 bg-green-100 text-green-800 px-4 py-2 rounded text-center">
-                              ✓ You have voted for this candidate
-                            </div>
-                          ) : electionVoted ? (
-                            <button
-                              className="mt-2 bg-gray-300 text-gray-500 px-4 py-2 rounded w-full cursor-not-allowed"
-                              disabled
-                            >
-                              Already Voted
-                            </button>
-                          ) : (
-                            <button
-                              onClick={async () => {
+                  {!hasVotedInElection(election._id) && (
+                    <div className="space-y-4">
+                      <h4 className="font-medium">Candidates</h4>
+                      {election.candidates.map((candidate, index) => {
+                        const candidateKey = `${election._id}_${candidate.address}`;
+                        const hasVoted = votedCandidates[candidateKey];
+                        const electionVoted = hasVotedInElection(election._id);
+                        
+                        return (
+                          <div key={index} className="border rounded p-3">
+                            <h5 className="font-medium">{candidate.name}</h5>
+                            <p className="text-gray-600">{candidate.description}</p>
+                            {hasVoted ? (
+                              <div className="mt-2 bg-green-100 text-green-800 px-4 py-2 rounded text-center">
+                                ✓ You have voted for this candidate
+                              </div>
+                            ) : electionVoted ? (
+                              <button
+                                className="mt-2 bg-gray-300 text-gray-500 px-4 py-2 rounded w-full cursor-not-allowed"
+                                disabled
+                              >
+                                Already Voted
+                              </button>
+                            ) : (
+                              <button
+                                onClick={async () => {
                                 debugLog("Vote Button Clicked", { 
                                   candidateName: candidate.name,
                                   candidateAddress: candidate.address,
@@ -464,18 +503,18 @@ const RegistrationForm = () => {
                                 } finally {
                                   setIsSubmitting(false);
                                 }
-                              }}
-                              className="mt-2 bg-blue-600 text-gray-900 px-4 py-2 rounded hover:bg-blue-700 w-full"
-                              disabled={isSubmitting}
-                            >
-                              {isSubmitting ? 'Processing...' : 'Vote'}
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-    }
+                                }}
+                                className="mt-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 w-full"
+                                disabled={isSubmitting}
+                              >
+                                {isSubmitting ? 'Processing...' : 'Vote'}
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -492,7 +531,7 @@ const RegistrationForm = () => {
           </p>
           <button
             onClick={() => setShowReapplyForm(true)}
-            className="w-full bg-blue-600 text-gray-900 py-2 px-4 rounded-md hover:bg-blue-700"
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700"
           >
             Reapply
           </button>

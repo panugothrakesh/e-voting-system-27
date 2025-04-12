@@ -23,140 +23,105 @@ interface Election {
 
 export async function POST(request: Request) {
   try {
-    // Extract data from the request
-    const { electionId, candidateName, candidateAddress, voterAddress } = await request.json()
+    const { contractAddress, candidateAddress, candidateName, electionId, txHash } = await request.json()
+    const { searchParams } = new URL(request.url)
+    const address = searchParams.get('address')
 
-    // Validate the request
-    if (!electionId || !candidateName || !candidateAddress || !voterAddress) {
+    if (!address) {
+      return NextResponse.json({ error: 'Wallet address is required' }, { status: 400 })
+    }
+
+    if (!contractAddress || !candidateAddress || !electionId || !txHash) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
     }
 
     const client = await clientPromise
     const db = client.db('e-voting')
 
-    // Get hashed address for lookups
-    const hashedAddress = hashAddress(voterAddress)
-    
-    // Find the voter
+    // Hash the address for lookup
+    const hashedAddress = hashAddress(address)
+
+    // First check if the voter exists
     const voter = await db.collection('voters').findOne({ hashedAddress })
     if (!voter) {
       return NextResponse.json({ error: 'Voter not found' }, { status: 404 })
     }
 
-    // Check if voter is approved
-    if (voter.status !== 'approved' || !voter.isWhitelisted) {
-      return NextResponse.json({ error: 'Voter is not approved for voting' }, { status: 403 })
-    }
-
-    // Check if voter was approved for this specific election
-    if (voter.approvedElectionId && voter.approvedElectionId.toString() !== electionId) {
-      return NextResponse.json({ 
-        error: 'Voter is not approved for this election' 
-      }, { status: 403 })
-    }
-
-    // Find the election
-    const election = await db.collection('elections').findOne({ 
-      _id: new ObjectId(electionId) 
-    }) as unknown as Election
-    
-    if (!election) {
-      return NextResponse.json({ error: 'Election not found' }, { status: 404 })
-    }
-
-    if (!election.isActive) {
-      return NextResponse.json({ error: 'Election is not active' }, { status: 400 })
-    }
-
-    // Verify if the candidate exists in this election
-    const candidate = election.candidates.find((c: Candidate) => c.name === candidateName)
-    if (!candidate) {
-      return NextResponse.json({ error: 'Candidate not found in this election' }, { status: 404 })
-    }
-
-    // Check if address matches (if candidate address is stored)
-    if (candidate.address && candidate.address !== candidateAddress) {
-      return NextResponse.json({ 
-        error: 'Candidate address mismatch' 
-      }, { status: 400 })
-    }
-
-    // Check if voter already voted in this election in our database
+    // Check if the voter has already voted in this election
     const existingVote = await db.collection('votes').findOne({
-      electionId,
-      hashedAddress
+      hashedAddress,
+      electionId
     })
 
     if (existingVote) {
-      return NextResponse.json({ 
-        error: 'You have already voted in this election according to our records' 
-      }, { status: 400 })
+      return NextResponse.json({ error: 'Already voted in this election' }, { status: 400 })
     }
 
-    // Double-check with the blockchain that the vote was actually cast
-    // This helps ensure our database stays in sync with the blockchain
+    // Verify the vote on the blockchain
     try {
-      const contractAddress = election.contractAddress as `0x${string}`
-      const alreadyVoted = await hasVoted(contractAddress, voterAddress)
-      
-      if (!alreadyVoted) {
-        return NextResponse.json({ 
-          error: 'Vote not found on blockchain. Please try voting again.' 
-        }, { status: 400 })
+      const hasVotedOnChain = await hasVoted(contractAddress as `0x${string}`, address)
+      if (!hasVotedOnChain) {
+        return NextResponse.json({ error: 'Vote not found on blockchain' }, { status: 400 })
       }
     } catch (error) {
       console.error('Error verifying vote on blockchain:', error)
-      // Continue anyway since the frontend already completed the blockchain transaction
-      console.log('Proceeding with database update despite blockchain verification error')
+      return NextResponse.json({ error: 'Failed to verify vote on blockchain' }, { status: 500 })
     }
 
-    // Record the vote in our database
-    await db.collection('votes').insertOne({
-      electionId,
+    // Record the vote
+    const voteResult = await db.collection('votes').insertOne({
       hashedAddress,
-      candidateName,
+      electionId,
       candidateAddress,
-      timestamp: new Date()
+      candidateName,
+      contractAddress,
+      txHash,
+      votedAt: new Date()
     })
 
-    // Update candidate votes count
-    const updateResult = await db.collection('elections').updateOne(
+    // Update the voter's record to mark them as having voted
+    await db.collection('voters').updateOne(
+      { hashedAddress },
+      {
+        $set: {
+          hasVoted: true,
+          lastVotedElectionId: electionId,
+          lastVotedAt: new Date()
+        }
+      }
+    )
+
+    // Also record in blockchain-votes collection for redundancy
+    await db.collection('blockchain-votes').insertOne({
+      hashedAddress,
+      electionId,
+      candidateAddress,
+      candidateName,
+      contractAddress,
+      txHash,
+      votedAt: new Date()
+    })
+
+    // Update the election's candidate vote count
+    await db.collection('elections').updateOne(
       { 
         _id: new ObjectId(electionId),
-        'candidates.name': candidateName
+        'candidates.address': candidateAddress
       },
-      { 
+      {
         $inc: { 'candidates.$.votes': 1 }
       }
     )
 
-    if (updateResult.matchedCount === 0) {
-      return NextResponse.json({ 
-        error: 'Failed to update vote count' 
-      }, { status: 500 })
-    }
-
-    // Mark the voter as having voted in this election
-    await db.collection('voters').updateOne(
-      { hashedAddress },
-      { 
-        $set: { 
-          hasVoted: true,
-          lastVotedElectionId: electionId,
-          votedAt: new Date()
-        } 
-      }
-    )
-
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: true,
-      message: 'Vote has been recorded successfully' 
+      voteId: voteResult.insertedId
     })
   } catch (error) {
     console.error('Error recording blockchain vote:', error)
-    return NextResponse.json({ 
-      error: 'Internal server error',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    )
   }
 } 

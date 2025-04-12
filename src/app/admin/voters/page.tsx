@@ -136,7 +136,8 @@ export default function VoterApprovalPage() {
           electionId: selectedElection || undefined,
           electionContractAddress: selectedElection 
             ? elections.find(e => e._id === selectedElection)?.contractAddress 
-            : undefined
+            : undefined,
+          updateOverallStatus: true
         }),
       })
 

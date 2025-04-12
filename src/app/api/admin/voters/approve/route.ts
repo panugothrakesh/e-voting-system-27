@@ -68,21 +68,15 @@ export async function POST(
 
     const now = new Date()
     
-    // Create or update the election approval status
-    const updateData: any = {
-      // Only update overall status if we're not doing per-election approval
-      ...(electionId ? {} : { status: action }),
-    }
-    
     // For per-election approval, add to electionApprovals array
     if (electionId) {
       // Each election approval entry will track: electionId, status, approvalDate, etc.
       const electionApproval = {
         electionId,
-        status: action,
+        status: 'approved',
         contractAddress: electionContractAddress,
-        isWhitelisted: action === 'approve',
-        ...(action === 'approve' ? { approvedAt: now.toISOString() } : { rejectedAt: now.toISOString() })
+        isWhitelisted: true,
+        approvedAt: now.toISOString()
       }
       
       // Check if this election is already in the approvals array
@@ -91,51 +85,37 @@ export async function POST(
       )
       
       if (existingApproval) {
-        // Update existing approval
-        updateData['electionApprovals.$[elem]'] = {
-          ...existingApproval,
-          ...electionApproval
-        }
-        
+        // Update existing approval and set overall status
         await db.collection('voters').updateOne(
           { encryptedAddress: walletAddress },
-          { $set: updateData },
+          { 
+            $set: { 
+              'electionApprovals.$[elem]': {
+                ...existingApproval,
+                ...electionApproval
+              },
+              status: 'approved' // Set overall status to 'approved'
+            }
+          },
           { 
             arrayFilters: [{ 'elem.electionId': electionId }]
           }
         )
       } else {
-        // Add new approval
-        updateData.$push = { electionApprovals: electionApproval }
-        
+        // Add new approval and set overall status
         await db.collection('voters').updateOne(
           { encryptedAddress: walletAddress },
-          updateData
+          { 
+            $push: { electionApprovals: electionApproval },
+            $set: { status: 'approved' } // Set overall status to 'approved'
+          }
         )
-      }
-      
-      // Also update the overall status based on the total approvals/rejections
-      const updatedVoter = await db.collection('voters').findOne({ 
-        encryptedAddress: walletAddress 
-      })
-      
-      if (updatedVoter && updatedVoter.electionApprovals?.length > 0) {
-        const hasApprovals = updatedVoter.electionApprovals.some((a: any) => a.status === 'approved')
-        
-        // If the voter has at least one approval, mark them as approved overall
-        // This is just for the global status indicator
-        if (hasApprovals && updatedVoter.status !== 'approved') {
-          await db.collection('voters').updateOne(
-            { encryptedAddress: walletAddress },
-            { $set: { status: 'approved' } }
-          )
-        }
       }
     } else {
       // Legacy non-election-specific approval (update only overall status)
       await db.collection('voters').updateOne(
         { encryptedAddress: walletAddress },
-        { $set: updateData }
+        { $set: { status: 'approve' } }
       )
     }
 
@@ -143,7 +123,6 @@ export async function POST(
     if (action === 'approve' && recipientAddress) {
       try {
         // Send a small amount of ETH to cover gas fees (adjust as needed)
-        // In production, this should check if they already have ETH
         console.log(`Sending ETH to ${recipientAddress}...`)
         
         // Simulate blockchain interaction for now
