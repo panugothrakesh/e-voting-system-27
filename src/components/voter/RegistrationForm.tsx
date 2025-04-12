@@ -3,10 +3,38 @@
 import { useState, useEffect } from 'react'
 import { useWallet } from '@/store/useStore'
 import { useQuery } from '@tanstack/react-query'
+import { voteByAddress } from '@/utils/contract'
+import { useRouter } from 'next/navigation'
+import { useAccount } from 'wagmi'
+import Link from 'next/link'
+
+// Helper function for detailed logging
+const debugLog = (title: string, data: any) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ======== ${title} ========`);
+  console.log(data);
+  console.log("=========================================");
+  
+  // Also log to localStorage for persistence
+  try {
+    const logs = JSON.parse(localStorage.getItem('votingLogs') || '[]');
+    logs.push({ timestamp, title, data: JSON.stringify(data) });
+    localStorage.setItem('votingLogs', JSON.stringify(logs.slice(-20))); // Keep last 20 logs
+  } catch (e) {
+    console.error("Failed to save log to localStorage:", e);
+  }
+};
 
 interface RegistrationStatus {
   isRegistered: boolean
   status: 'not_registered' | 'pending' | 'approved' | 'rejected'
+}
+
+interface Candidate {
+  name: string
+  description: string
+  votes: number
+  address?: string
 }
 
 interface Election {
@@ -15,15 +43,12 @@ interface Election {
   description: string
   startDate: string
   endDate: string
-  candidates: {
-    name: string
-    description: string
-    votes: number
-  }[]
+  contractAddress: string
+  candidates: Candidate[]
   isActive: boolean
 }
 
-export default function RegistrationForm() {
+const RegistrationForm = () => {
   const { address } = useWallet()
   const [formData, setFormData] = useState({
     firstName: '',
@@ -35,6 +60,13 @@ export default function RegistrationForm() {
   })
   const [mounted, setMounted] = useState(false)
   const [showReapplyForm, setShowReapplyForm] = useState(false)
+  const [selectedElection, setSelectedElection] = useState<Election | null>(null)
+  const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError] = useState('')
+  const [showVoteConfirmation, setShowVoteConfirmation] = useState(false)
+  const router = useRouter()
+  const [votedCandidates, setVotedCandidates] = useState<Record<string, boolean>>({})
 
   const { data: status, isLoading, refetch } = useQuery<RegistrationStatus>({
     queryKey: ['voterStatus', address],
@@ -58,93 +90,76 @@ export default function RegistrationForm() {
     enabled: !!address && status?.status === 'approved'
   })
 
-  useEffect(() => {
-    setMounted(true)
-  }, [])
+  const handleCandidateClick = (election: Election, candidate: Candidate) => {
+    setSelectedElection(election);
+    setSelectedCandidate(candidate);
+    setShowVoteConfirmation(true);
+  };
 
-  if (!mounted) {
-    return null
-  }
-
-  if (isLoading) {
-    return <div className="text-center py-8">Loading...</div>
-  }
-
-  // If user has any registration status (pending, approved, or rejected), show status message
-  if (status?.status !== 'not_registered' && !showReapplyForm) {
-    if (status?.status === 'pending') {
-      return (
-        <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Registration Pending</h2>
-          <p className="text-gray-600">
-            Your registration is under review. Please wait for admin approval.
-          </p>
-        </div>
-      )
+  const handleVoteConfirmation = async () => {
+    console.log('Vote confirmation initiated');
+    setShowVoteConfirmation(false);
+    setIsSubmitting(true);
+    
+    try {
+      // Validate inputs
+      if (!selectedCandidate) {
+        console.log('No candidate selected');
+        return;
+      }
+      
+      if (!selectedElection) {
+        console.log('No election selected');
+        return;
+      }
+      
+      console.log('Selected election:', selectedElection);
+      console.log('Selected candidate:', selectedCandidate);
+      
+      // First check if wallet is connected
+      if (typeof window.ethereum === 'undefined') {
+        console.log('No Ethereum provider found');
+        return;
+      }
+      
+      // Add validation for candidate address
+      if (!selectedCandidate.address) {
+        console.error('Candidate has no address!');
+        return;
+      }
+      
+      if (!selectedCandidate.address.startsWith('0x') || selectedCandidate.address.length !== 42) {
+        console.error('Invalid candidate address format:', selectedCandidate.address);
+        return;
+      }
+      
+      // Call the voteByAddress function from our updated contract utility
+      console.log('Calling voteByAddress with:', selectedElection.contractAddress, selectedCandidate.address);
+      const result = await voteByAddress(
+        selectedElection.contractAddress as `0x${string}`,
+        selectedCandidate.address as `0x${string}`
+      );
+      
+      // Log the transaction
+      console.log('Vote transaction succeeded:', result);
+      
+      // Reset the form
+      setSelectedElection(null);
+      setSelectedCandidate(null);
+      console.log('Vote successful! Transaction hash: ' + result);
+    } catch (error) {
+      console.error('Error during voting:', error);
+      
+      // Display the error message
+      if (error instanceof Error) {
+        console.error("Voting failed:", error.message);
+      } else {
+        console.error("Voting failed:", String(error));
+      }
+    } finally {
+      setIsSubmitting(false);
     }
-    if (status?.status === 'approved') {
-      return (
-        <div className="max-w-4xl mx-auto bg-white p-6 rounded-lg shadow">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">Active Elections</h2>
-          {isLoadingElections ? (
-            <div className="text-center py-8">Loading elections...</div>
-          ) : elections?.length === 0 ? (
-            <p className="text-gray-600">No active elections at the moment.</p>
-          ) : (
-            <div className="space-y-6">
-              {elections?.map((election) => (
-                <div key={election._id} className="border rounded-lg p-4">
-                  <h3 className="text-xl font-semibold mb-2">{election.title}</h3>
-                  <p className="text-gray-600 mb-4">{election.description}</p>
-                  <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div>
-                      <p className="text-sm text-gray-500">Start Date</p>
-                      <p>{new Date(election.startDate).toLocaleString()}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-gray-500">End Date</p>
-                      <p>{new Date(election.endDate).toLocaleString()}</p>
-                    </div>
-                  </div>
-                  <div className="space-y-4">
-                    <h4 className="font-medium">Candidates</h4>
-                    {election.candidates.map((candidate, index) => (
-                      <div key={index} className="border rounded p-3">
-                        <h5 className="font-medium">{candidate.name}</h5>
-                        <p className="text-gray-600">{candidate.description}</p>
-                        <button
-                          onClick={() => handleVote(election._id, index)}
-                          className="mt-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-                        >
-                          Vote
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )
-    }
-    if (status?.status === 'rejected') {
-      return (
-        <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Registration Rejected</h2>
-          <p className="text-gray-600 mb-4">
-            Your registration has been rejected. Please review your information and try again.
-          </p>
-          <button
-            onClick={() => setShowReapplyForm(true)}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700"
-          >
-            Reapply
-          </button>
-        </div>
-      )
-    }
-  }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -182,31 +197,403 @@ export default function RegistrationForm() {
     }
   }
 
-  const handleVote = async (electionId: string, candidateIndex: number) => {
-    if (!address) return
-
-    try {
-      const response = await fetch('/api/voter/vote', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          electionId,
-          candidateIndex,
-          voterAddress: address
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error('Voting failed')
-      }
-
-      // Refresh elections data
-      refetch()
-    } catch (error) {
-      console.error('Voting error:', error)
+  useEffect(() => {
+    setMounted(true)
+    
+    // Check if MetaMask is installed
+    if (window.ethereum) {
+      console.log("MetaMask is installed");
+      
+      // Log chain ID
+      window.ethereum.request({ method: 'eth_chainId' })
+        .then((chainId: string) => {
+          console.log("Current chain ID:", parseInt(chainId, 16));
+        })
+        .catch((err: any) => {
+          console.error("Error getting chain ID:", err);
+        });
+      
+      // Log accounts
+      window.ethereum.request({ method: 'eth_accounts' })
+        .then((accounts: string[]) => {
+          console.log("Connected accounts:", accounts);
+        })
+        .catch((err: any) => {
+          console.error("Error getting accounts:", err);
+        });
+    } else {
+      console.error("MetaMask is not installed");
     }
+  }, [])
+
+  useEffect(() => {
+    if (mounted) {
+      try {
+        const savedVotes = localStorage.getItem('votedCandidates');
+        if (savedVotes) {
+          setVotedCandidates(JSON.parse(savedVotes));
+        }
+      } catch (e) {
+        console.error("Failed to load voted candidates:", e);
+      }
+    }
+  }, [mounted]);
+
+  // Add a helper function to check if the user has voted in an election
+  const hasVotedInElection = (electionId: string) => {
+    if (!votedCandidates) return false;
+    
+    // Check if any key in votedCandidates starts with this election's ID
+    return Object.keys(votedCandidates).some(key => 
+      key.startsWith(`${electionId}_`) && votedCandidates[key]
+    );
+  };
+
+  if (!mounted) {
+    return null
+  }
+
+  if (isLoading) {
+    return <div className="text-center py-8">Loading...</div>
+  }
+
+  // If user has any registration status (pending, approved, or rejected), show status message
+  if (status?.status !== 'not_registered' && !showReapplyForm) {
+    if (status?.status === 'pending') {
+      return (
+        <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Registration Pending</h2>
+          <p className="text-gray-600">
+            Your registration is under review. Please wait for admin approval.
+          </p>
+        </div>
+      )
+    }
+    if (status?.status === 'approved') {
+      return (
+        <div className="max-w-4xl mx-auto bg-white p-6 rounded-lg shadow">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6">Active Elections</h2>
+          
+          {isLoadingElections ? (
+            <div className="text-center py-8">Loading elections...</div>
+          ) : elections?.length === 0 ? (
+            <p className="text-gray-600">No active elections at the moment.</p>
+          ) : (
+            <div className="space-y-6">
+              {elections?.map((election) => (
+                <div key={election._id} className="border rounded-lg p-4">
+                  <h3 className="text-xl font-semibold mb-2">{election.title}</h3>
+                  <p className="text-gray-600 mb-4">{election.description}</p>
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <p className="text-sm text-gray-500">Start Date</p>
+                      <p>{new Date(election.startDate).toLocaleString()}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-500">End Date</p>
+                      <p>{new Date(election.endDate).toLocaleString()}</p>
+                    </div>
+                  </div>
+                  
+                  {/* Check if user has voted in this election */}
+                  {hasVotedInElection(election._id) && (
+                    <div className="mb-4 bg-green-100 text-green-800 p-3 rounded-md text-center font-medium">
+                      ✓ You have already voted in this election
+                    </div>
+                  )}
+                  
+                  {!hasVotedInElection(election._id) && <div className="space-y-4">
+                    <h4 className="font-medium">Candidates</h4>
+                    {election.candidates.map((candidate, index) => {
+                      // Create a unique key for this candidate
+                      const candidateKey = `${election._id}_${candidate.address}`;
+                      const hasVoted = votedCandidates[candidateKey];
+                      // Check if user has voted in this election at all
+                      const electionVoted = hasVotedInElection(election._id);
+                      
+                      return (
+                        <div key={index} className="border rounded p-3">
+                          <h5 className="font-medium">{candidate.name}</h5>
+                          <p className="text-gray-600">{candidate.description}</p>
+                          {hasVoted ? (
+                            <div className="mt-2 bg-green-100 text-green-800 px-4 py-2 rounded text-center">
+                              ✓ You have voted for this candidate
+                            </div>
+                          ) : electionVoted ? (
+                            <button
+                              className="mt-2 bg-gray-300 text-gray-500 px-4 py-2 rounded w-full cursor-not-allowed"
+                              disabled
+                            >
+                              Already Voted
+                            </button>
+                          ) : (
+                            <button
+                              onClick={async () => {
+                                debugLog("Vote Button Clicked", { 
+                                  candidateName: candidate.name,
+                                  candidateAddress: candidate.address,
+                                  electionTitle: election.title,
+                                  contractAddress: election.contractAddress,
+                                  yourWallet: address
+                                });
+                                
+                                try {
+                                  // Show loading indicator
+                                  setIsSubmitting(true);
+                                  
+                                  if (!candidate.address) {
+                                    console.error("This candidate does not have a valid address");
+                                    setIsSubmitting(false);
+                                    return;
+                                  }
+                                  
+                                  if (!election.contractAddress) {
+                                    console.error("This election does not have a valid contract address");
+                                    setIsSubmitting(false);
+                                    return;
+                                  }
+                                  
+                                  // Prepare transaction data
+                                  const functionSignature = '0x82c4a948'; // keccak256("voteByAddress(address)")
+                                  const paddedAddress = (candidate.address as string).slice(2).padStart(64, '0');
+                                  const txData = `${functionSignature}${paddedAddress}`;
+                                  
+                                  debugLog("Preparing Transaction", {
+                                    functionSignature,
+                                    paddedAddress,
+                                    txData,
+                                    contractAddress: election.contractAddress,
+                                    yourWallet: address
+                                  });
+                                  
+                                  // Request accounts from wallet
+                                  if (!window.ethereum) {
+                                    throw new Error("MetaMask not installed");
+                                  }
+                                  
+                                  const accounts = await window.ethereum.request({
+                                    method: 'eth_requestAccounts'
+                                  });
+                                  
+                                  if (!accounts || accounts.length === 0) {
+                                    throw new Error("No accounts connected");
+                                  }
+                                  
+                                  debugLog("MetaMask Connected", { accounts });
+                                  
+                                  // Send raw transaction directly
+                                  const txHash = await window.ethereum.request({
+                                    method: 'eth_sendTransaction',
+                                    params: [{
+                                      from: accounts[0],
+                                      to: election.contractAddress,
+                                      data: txData,
+                                      gas: '0x30D40', // 200,000 gas
+                                    }]
+                                  });
+                                  
+                                  debugLog("Transaction Submitted", { txHash });
+                                  
+                                  // Mark this candidate as voted for
+                                  setVotedCandidates(prev => ({
+                                    ...prev,
+                                    [candidateKey]: true
+                                  }));
+                                  
+                                  // Save to localStorage to persist between sessions
+                                  try {
+                                    const voted = JSON.parse(localStorage.getItem('votedCandidates') || '{}');
+                                    voted[candidateKey] = true;
+                                    localStorage.setItem('votedCandidates', JSON.stringify(voted));
+                                  } catch (e) {
+                                    console.error("Failed to save voted state:", e);
+                                  }
+                                  
+                                  console.log(`Vote successful! Transaction hash: ${txHash}`);
+                                } catch (error) {
+                                  debugLog("Voting Failed", { 
+                                    error: error instanceof Error ? error.message : String(error),
+                                    errorObject: String(error)
+                                  });
+                                  console.error("Voting failed:", error instanceof Error ? error.message : String(error));
+                                } finally {
+                                  setIsSubmitting(false);
+                                }
+                              }}
+                              className="mt-2 bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 w-full"
+                              disabled={isSubmitting}
+                            >
+                              {isSubmitting ? 'Processing...' : 'Vote'}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+    }
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )
+    }
+    if (status?.status === 'rejected') {
+      return (
+        <div className="max-w-md mx-auto bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Registration Rejected</h2>
+          <p className="text-gray-600 mb-4">
+            Your registration has been rejected. Please review your information and try again.
+          </p>
+          <button
+            onClick={() => setShowReapplyForm(true)}
+            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700"
+          >
+            Reapply
+          </button>
+        </div>
+      )
+    }
+  }
+
+  // Vote Confirmation Modal
+  if (showVoteConfirmation && selectedCandidate && selectedElection) {
+    console.log("⭐ VOTE CONFIRMATION STATE:", {
+      showVoteConfirmation,
+      selectedCandidate,
+      selectedElection,
+    });
+    
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white p-6 rounded-lg max-w-md w-full">
+          <h3 className="text-xl font-bold mb-4">Confirm Your Vote</h3>
+          <p className="mb-4">
+            You are about to vote for <strong>{selectedCandidate.name}</strong> in the election <strong>{selectedElection.title}</strong>.
+          </p>
+          <p className="mb-2">
+            <strong>Candidate Address:</strong> {selectedCandidate.address || 'No address specified'}
+          </p>
+          <p className="mb-2">
+            <strong>Contract Address:</strong> {selectedElection.contractAddress || 'No contract address specified'}
+          </p>
+          <p className="mb-4 text-red-600">
+            This action cannot be undone and will require a blockchain transaction.
+          </p>
+          <div className="flex justify-end space-x-3">
+            <button
+              onClick={() => {
+                console.log("Cancel button clicked");
+                setShowVoteConfirmation(false);
+              }}
+              className="px-4 py-2 bg-gray-200 rounded hover:bg-gray-300"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => {
+                console.log("Confirm vote button clicked");
+                handleVoteConfirmation();
+              }}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Processing...' : 'Confirm Vote'}
+            </button>
+          </div>
+          <div className="mt-4 border-t pt-4">
+            <p className="text-sm text-gray-500 mb-2">Troubleshooting Options:</p>
+            <button
+              onClick={async () => {
+                console.log("Testing MetaMask connection");
+                try {
+                  if (!window.ethereum) {
+                    throw new Error("MetaMask not installed");
+                  }
+                  
+                  const accounts = await window.ethereum.request({
+                    method: 'eth_requestAccounts'
+                  });
+                  
+                  console.log("Connected accounts:", accounts);
+                  console.log(`Current chain ID: ${parseInt(await window.ethereum.request({ method: 'eth_chainId' }), 16)} (${parseInt(await window.ethereum.request({ method: 'eth_chainId' }), 16) === 11155111 ? 'Sepolia - Correct!' : 'NOT Sepolia - Please switch networks'})`);
+                } catch (error) {
+                  console.error("MetaMask test failed:", error);
+                }
+              }}
+              type="button"
+              className="w-full mt-2 bg-gray-200 text-gray-800 py-2 px-4 rounded-md hover:bg-gray-300"
+            >
+              Test MetaMask Connection
+            </button>
+            
+            <button
+              onClick={() => {
+                console.log("DEBUG CONTRACT INFO");
+                console.log("Election:", selectedElection);
+                console.log("Candidate:", selectedCandidate);
+              }}
+              type="button"
+              className="w-full mt-2 bg-yellow-200 text-yellow-800 py-2 px-4 rounded-md hover:bg-yellow-300"
+            >
+              Debug Contract Info
+            </button>
+            
+            <button
+              onClick={async () => {
+                console.log("Direct vote with raw Ethereum API");
+                try {
+                  if (!window.ethereum) {
+                    throw new Error("MetaMask not installed");
+                  }
+                  
+                  if (!selectedCandidate?.address || !selectedElection?.contractAddress) {
+                    throw new Error("Missing candidate or election address");
+                  }
+                  
+                  const accounts = await window.ethereum.request({
+                    method: 'eth_requestAccounts'
+                  });
+                  
+                  if (!accounts || accounts.length === 0) {
+                    throw new Error("No accounts connected");
+                  }
+                  
+                  const functionSignature = '0x82c4a948'; // keccak256("voteByAddress(address)")
+                  const paddedAddress = (selectedCandidate.address as string).slice(2).padStart(64, '0');
+                  const txData = `${functionSignature}${paddedAddress}`;
+                  
+                  console.log("Raw transaction data:", {
+                    from: accounts[0],
+                    to: selectedElection.contractAddress,
+                    data: txData
+                  });
+                  
+                  // Send raw transaction
+                  const txHash = await window.ethereum.request({
+                    method: 'eth_sendTransaction',
+                    params: [{
+                      from: accounts[0],
+                      to: selectedElection.contractAddress,
+                      data: txData,
+                      gas: '0x30D40', // 200,000 gas
+                    }]
+                  });
+                  
+                  console.log("Transaction sent with hash:", txHash);
+                } catch (error) {
+                  console.error("Direct vote failed:", error);
+                }
+              }}
+              type="button"
+              className="w-full mt-2 bg-red-200 text-red-800 py-2 px-4 rounded-md hover:bg-red-300"
+            >
+              Direct Vote (Raw)
+            </button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -281,4 +668,6 @@ export default function RegistrationForm() {
       </form>
     </div>
   )
-} 
+}
+
+export default RegistrationForm 

@@ -92,6 +92,13 @@ const VOTING_ABI = [
     type: 'function'
   },
   {
+    inputs: [{ internalType: 'address', name: '_candidateAddress', type: 'address' }],
+    name: 'getVotesByAddress',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function'
+  },
+  {
     inputs: [{ internalType: 'address', name: '', type: 'address' }],
     name: 'whitelisted',
     outputs: [{ internalType: 'bool', name: '', type: 'bool' }],
@@ -158,17 +165,104 @@ export async function getDeployedElections(): Promise<string[]> {
   }
 }
 
-// Create a new election
+// Add a helper function to extract contract address from transaction receipts
+export async function extractContractAddressFromReceipt(receipt: any): Promise<string | undefined> {
+  try {
+    console.log('Attempting to extract contract address from receipt...');
+    
+    // Method 1: Check for contractAddress directly on the receipt
+    if (receipt.contractAddress) {
+      console.log('Found contract address directly in receipt:', receipt.contractAddress);
+      return receipt.contractAddress;
+    }
+    
+    // Method 2: Look for a Created log in the receipt logs
+    for (const log of receipt.logs || []) {
+      // First check if this log is from the factory contract
+      if (log.address?.toLowerCase() === FACTORY_ADDRESS.toLowerCase()) {
+        // Parse topics for VotingContractCreated event
+        if (log.topics && log.topics.length >= 2) {
+          // The second topic often contains the address as the indexed parameter
+          const possibleAddress = '0x' + log.topics[1]?.slice(26);
+          if (possibleAddress?.length === 42 && /^0x[0-9a-fA-F]{40}$/.test(possibleAddress)) {
+            console.log('Found contract address in log topic:', possibleAddress);
+            return possibleAddress;
+          }
+        }
+      }
+    }
+    
+    // Method 3: Convert receipt to string and use regex to find "[0x...Created]" pattern
+    try {
+      const receiptString = JSON.stringify(receipt);
+      // This regex looks for patterns like [0x1234...Created] in the receipt
+      const createdRegex = /\[.*?(0x[0-9a-fA-F]{40}).*?[Cc]reated.*?\]/;
+      const match = receiptString.match(createdRegex);
+      
+      if (match && match[1]) {
+        console.log('Found contract address via regex in receipt string:', match[1]);
+        return match[1];
+      }
+    } catch (regexError) {
+      console.error('Error parsing receipt with regex:', regexError);
+    }
+    
+    // Method 4: Search for any addresses in the logs that aren't the factory
+    const allAddresses = new Set<string>();
+    
+    for (const log of receipt.logs || []) {
+      // Add the log's address if it's not the factory
+      if (log.address && 
+          log.address !== FACTORY_ADDRESS &&
+          log.address.startsWith('0x') && 
+          log.address.length === 42) {
+        allAddresses.add(log.address);
+      }
+      
+      // Also look through topics for addresses
+      if (log.topics) {
+        for (const topic of log.topics) {
+          if (topic && topic.length >= 66) {
+            const addr = '0x' + topic.slice(26);
+            if (addr.length === 42 && /^0x[0-9a-fA-F]{40}$/.test(addr)) {
+              allAddresses.add(addr);
+            }
+          }
+        }
+      }
+    }
+    
+    // Filter out zero address and convert to array
+    const candidates = Array.from(allAddresses).filter(
+      addr => addr !== '0x0000000000000000000000000000000000000000'
+    );
+    
+    if (candidates.length === 1) {
+      console.log('Found single candidate address in logs:', candidates[0]);
+      return candidates[0];
+    } else if (candidates.length > 1) {
+      console.log('Found multiple candidate addresses in logs:', candidates);
+      // Could implement a heuristic to pick the most likely one
+    }
+    
+    return undefined;
+  } catch (error) {
+    console.error('Error extracting contract address from receipt:', error);
+    return undefined;
+  }
+}
+
+// Update the createElection function to use the helper
 export async function createElection(
   name: string,
   description: string
 ): Promise<string> {
   try {
-    console.log('Creating election with params:', { name, description })
+    console.log('Creating election with params:', { name, description });
     
     // Get current list of deployments before creating new election
-    const beforeDeployments = await getDeployedElections()
-    console.log('Elections before creation:', beforeDeployments)
+    const beforeDeployments = await getDeployedElections();
+    console.log('Elections before creation:', beforeDeployments);
     
     // @ts-expect-error - Config type incompatibility
     const hash = await writeContract(config, {
@@ -176,19 +270,19 @@ export async function createElection(
       abi: FACTORY_ABI,
       functionName: 'createElection',
       args: [name, description]
-    })
+    });
 
-    console.log('Transaction hash:', hash)
+    console.log('Transaction hash:', hash);
 
     // Get the public client for interacting with the blockchain
     // @ts-expect-error - Config type incompatibility
-    const publicClient = getPublicClient(config)
+    const publicClient = getPublicClient(config);
     if (!publicClient) {
-      throw new Error('Failed to get public client')
+      throw new Error('Failed to get public client');
     }
 
-    console.log('Waiting for transaction receipt...')
-    let receipt
+    console.log('Waiting for transaction receipt...');
+    let receipt;
     
     try {
       // Set a longer timeout (30 seconds) for receipt retrieval
@@ -196,157 +290,53 @@ export async function createElection(
         hash, 
         timeout: 30_000,
         confirmations: 1 // Only wait for 1 confirmation
-      })
+      });
     } catch (receiptError) {
-      console.error('Error getting transaction receipt:', receiptError)
+      console.error('Error getting transaction receipt:', receiptError);
       throw new Error('Failed to get transaction receipt: ' + 
-        (receiptError instanceof Error ? receiptError.message : String(receiptError)))
+        (receiptError instanceof Error ? receiptError.message : String(receiptError)));
     }
     
-    console.log('Transaction receipt received:', receipt)
+    console.log('Transaction receipt received:', receipt);
     
     // Check if the transaction was successful
     if (receipt.status !== 'success') {
-      throw new Error('Transaction failed or was reverted')
+      throw new Error('Transaction failed or was reverted');
     }
     
     // Wait a moment for blockchain state to update
-    console.log('Waiting for blockchain state to update...')
-    await new Promise(resolve => setTimeout(resolve, 5000))
+    console.log('Waiting for blockchain state to update...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
     
+    // After the receipt is received, extract the contract address
+    const extractedAddress = await extractContractAddressFromReceipt(receipt);
+    if (extractedAddress) {
+      console.log('Successfully extracted contract address:', extractedAddress);
+      return extractedAddress;
+    }
+    
+    // Fall back to checking the deployments if we couldn't extract the address
     // Get updated list of deployments after creating new election
-    const afterDeployments = await getDeployedElections()
-    console.log('Elections after creation:', afterDeployments)
+    const afterDeployments = await getDeployedElections();
+    console.log('Elections after creation:', afterDeployments);
     
     // Find the new contract address (should be the one that wasn't in the before list)
-    const newDeployments = afterDeployments.filter(addr => !beforeDeployments.includes(addr))
-    console.log('New deployments:', newDeployments)
+    const newDeployments = afterDeployments.filter(addr => !beforeDeployments.includes(addr));
+    console.log('New deployments:', newDeployments);
     
-    let contractAddress: string | undefined
-    
-    if (newDeployments.length > 0) {
-      // Use the most recently deployed contract (should be just one)
-      contractAddress = newDeployments[0]
-      console.log('New election created at:', contractAddress)
-      return contractAddress
+    if (newDeployments.length === 1) {
+      const newAddress = newDeployments[0];
+      console.log('Found new election at:', newAddress);
+      return newAddress;
     }
     
-    // Use a BigInt-safe logging function
-    const logBigIntSafe = (label: string, obj: unknown) => {
-      console.log(label, JSON.parse(JSON.stringify(obj, (_, value) => 
-        typeof value === 'bigint' ? value.toString() : value
-      )))
-    }
-    
-    // If we can't find a new deployment, fall back to checking logs
-    logBigIntSafe('Transaction logs:', receipt.logs)
-    
-    // Print out more detailed information about each log
-    console.log('Analyzing logs for contract address:')
-    receipt.logs.forEach((log, i) => {
-      console.log(`Log #${i}:`, {
-        address: log.address,
-        topicsLength: log.topics?.length,
-        topics: log.topics,
-        dataLength: log.data?.length,
-        dataPrefix: log.data?.substring(0, 66)
-      })
-    })
-    
-    // The event might be identified by the contract address being the first topic
-    for (const log of receipt.logs) {
-      if (log.topics && log.topics.length >= 2 && log.topics[1]) {
-        if (log.address === FACTORY_ADDRESS) {
-          // Extract the address from the second topic (indexed contractAddress)
-          contractAddress = '0x' + log.topics[1].slice(26)
-          console.log('Found contract address from indexed topic:', contractAddress)
-          break
-        }
-      }
-    }
-    
-    // If no address found yet, try looking at the data field
-    if (!contractAddress && receipt.logs.length > 0) {
-      const lastLog = receipt.logs[receipt.logs.length - 1]
-      
-      // If the log has a data field and it's from our factory
-      if (lastLog && lastLog.data && lastLog.data.length > 66 && lastLog.address === FACTORY_ADDRESS) {
-        // Data field usually contains the address at position 0-64 (32 bytes)
-        // Try a few different positions
-        const possibleAddresses = [
-          '0x' + lastLog.data.slice(26, 66),  // Standard position
-          '0x' + lastLog.data.slice(2, 42),   // Alternative position 1
-          '0x' + lastLog.data.slice(64, 104), // Alternative position 2
-        ]
-        
-        console.log('Possible addresses from data field:', possibleAddresses)
-        
-        // Check each possible address for validity
-        for (const addr of possibleAddresses) {
-          if (addr.startsWith('0x') && addr.length === 42) {
-            // Simple validation: must be 0x + 40 hex characters
-            const isValidHex = /^0x[0-9a-fA-F]{40}$/.test(addr)
-            if (isValidHex) {
-              console.log('Found valid address from data field:', addr)
-              contractAddress = addr
-              break
-            }
-          }
-        }
-      }
-    }
-    
-    // If still no address found, look for any address-like pattern in logs
-    if (!contractAddress) {
-      console.log('Searching for any address pattern in logs...')
-      
-      // Combine all topics and data from all logs
-      const allTextData = receipt.logs.flatMap(log => {
-        return [
-          ...(log.topics || []),
-          log.data || ''
-        ]
-      }).join('')
-      
-      // Search for patterns that look like Ethereum addresses
-      const addressRegex = /0x[0-9a-fA-F]{40}/g
-      const allAddresses = allTextData.match(addressRegex) || []
-      
-      console.log('All addresses found in logs:', allAddresses)
-      
-      // Filter out the factory address and any zero addresses
-      const zeroAddress = '0x0000000000000000000000000000000000000000'
-      const candidateAddresses = allAddresses.filter(addr => 
-        addr !== FACTORY_ADDRESS.toLowerCase() && 
-        addr !== FACTORY_ADDRESS && 
-        addr !== zeroAddress
-      )
-      
-      if (candidateAddresses.length > 0) {
-        // Take the first non-factory, non-zero address
-        contractAddress = candidateAddresses[0]
-        console.log('Found potential contract address by regex:', contractAddress)
-      }
-    }
-    
-    // If still no address, try to get the created contract address from the transaction receipt
-    if (!contractAddress && receipt.contractAddress) {
-      contractAddress = receipt.contractAddress
-      console.log('Using contract address from receipt:', contractAddress)
-    }
-
-    if (!contractAddress) {
-      throw new Error('Could not determine the created contract address. The transaction was successful, but no new contract could be identified. Please check the factory contract\'s getDeployedVotings function directly.')
-    }
-
-    console.log('Election created at:', contractAddress)
-    return contractAddress
+    throw new Error('Could not determine the created contract address. The transaction was successful, but no new contract could be identified. Please check the transaction on the block explorer and update the contract address manually.');
   } catch (error) {
-    console.error('Error creating election:', error)
+    console.error('Error creating election:', error);
     if (error instanceof Error) {
-      throw error
+      throw error;
     }
-    throw new Error('Failed to create election')
+    throw new Error('Failed to create election');
   }
 }
 
@@ -452,44 +442,109 @@ export async function whitelistVoters(
 }
 
 // Vote by address
-export async function voteByAddress(
-  contractAddress: string,
-  candidateAddress: string
-): Promise<void> {
-  try {
-    console.log('Voting by address:', { contractAddress, candidateAddress })
-    
-    const address = contractAddress as Address
-    const candidate = candidateAddress as Address
-    if (!address || !candidate) {
-      throw new Error('Invalid addresses')
-    }
-
-    // @ts-expect-error - Config type incompatibility
-    const result = await writeContract(config, {
-      address,
-      abi: VOTING_ABI,
-      functionName: 'voteByAddress',
-      args: [candidate]
-    })
-
-    console.log('Transaction hash:', result)
-
-    // @ts-expect-error - Config type incompatibility
-    const publicClient = getPublicClient(config)
-    if (!publicClient) {
-      throw new Error('Failed to get public client')
-    }
-
-    await publicClient.waitForTransactionReceipt({ hash: result })
-  } catch (error) {
-    console.error('Error voting:', error)
-    if (error instanceof Error) {
-      throw error
-    }
-    throw new Error('Failed to vote')
+export const voteByAddress = async (contractAddress: `0x${string}`, candidateAddress: `0x${string}`) => {
+  console.log(`Voting for candidate: ${candidateAddress} in election: ${contractAddress}`);
+  
+  if (!contractAddress || typeof contractAddress !== 'string' || !contractAddress.startsWith('0x')) {
+    console.error('Invalid contract address:', contractAddress);
+    throw new Error('Invalid contract address format');
   }
-}
+  
+  if (!candidateAddress || typeof candidateAddress !== 'string' || !candidateAddress.startsWith('0x')) {
+    console.error('Invalid candidate address:', candidateAddress);
+    throw new Error('Invalid candidate address format');
+  }
+  
+  try {
+    // Check if ethereum provider is available
+    if (typeof window === 'undefined' || !window.ethereum) {
+      console.error('No Ethereum provider found');
+      throw new Error('No Ethereum provider found. Please install MetaMask or another wallet extension.');
+    }
+    
+    // Request accounts to ensure we're connected
+    console.log('Requesting accounts from wallet...');
+    const accounts = await window.ethereum.request({
+      method: 'eth_requestAccounts'
+    });
+    
+    if (!accounts || accounts.length === 0) {
+      console.error('No accounts returned from wallet');
+      throw new Error('No accounts found. Please connect your wallet.');
+    }
+    
+    const voterAddress = accounts[0];
+    console.log(`Voter address: ${voterAddress}`);
+    
+    // Verify we're on the correct network
+    const chainIdHex = await window.ethereum.request({
+      method: 'eth_chainId'
+    });
+    
+    const chainId = parseInt(chainIdHex, 16);
+    console.log(`Current chain ID: ${chainId}`);
+    
+    // Sepolia testnet is 11155111
+    if (chainId !== 11155111) {
+      console.error('Wrong network detected:', chainId);
+      throw new Error(`Please switch to Sepolia testnet before voting. Current network: ${chainId}`);
+    }
+    
+    // SIMPLIFIED APPROACH: Call the contract's voteByAddress function directly
+    console.log('Preparing transaction...');
+    
+    // This is the function selector for voteByAddress(address)
+    const functionSelector = '0x82c4a948'; // keccak256("voteByAddress(address)") first 4 bytes
+    
+    // Parameters need to be padded to 32 bytes (64 hex characters)
+    const paddedAddress = candidateAddress.slice(2).padStart(64, '0');
+    
+    // Combine function selector and padded parameter
+    const txData = `${functionSelector}${paddedAddress}`;
+    
+    console.log('Transaction data:', txData);
+    console.log('Sending to contract:', contractAddress);
+    console.log('From account:', voterAddress);
+    
+    // Send the transaction
+    console.log('Submitting transaction to MetaMask...');
+    const txHash = await window.ethereum.request({
+      method: 'eth_sendTransaction',
+      params: [{
+        from: voterAddress,
+        to: contractAddress,
+        data: txData,
+        gas: '0x30D40', // 200,000 gas - increase this value
+      }]
+    });
+    
+    console.log('Transaction submitted! Hash:', txHash);
+    
+    // Return the transaction hash
+    return {
+      success: true,
+      txHash
+    };
+  } catch (error) {
+    console.error('Error in voteByAddress:', error);
+    
+    // Handle specific errors
+    if (error instanceof Error) {
+      const errorMsg = error.message.toLowerCase();
+      
+      if (errorMsg.includes('user denied') || errorMsg.includes('user rejected')) {
+        throw new Error('Transaction was rejected in your wallet');
+      } else if (errorMsg.includes('insufficient funds')) {
+        throw new Error('Insufficient funds for gas. Please add ETH to your wallet');
+      } else {
+        // Pass the original error message
+        throw error;
+      }
+    }
+    
+    throw error;
+  }
+};
 
 // End voting and declare winner
 export async function endVotingAndDeclareWinner(contractAddress: string): Promise<void> {
@@ -799,4 +854,167 @@ export async function getElectionResults(
     }
     throw new Error('Failed to get election results')
   }
-} 
+}
+
+// Update the getVotesByAddress function with more debugging and fallback
+export async function getVotesByAddress(
+  contractAddress: string,
+  candidateAddress: string
+): Promise<number> {
+  try {
+    console.log('Getting votes for candidate:', { contractAddress, candidateAddress });
+    
+    // Validate addresses
+    if (!contractAddress || !contractAddress.startsWith('0x') || contractAddress.length !== 42) {
+      console.error('Invalid contract address format:', contractAddress);
+      throw new Error(`Invalid contract address format: ${contractAddress}`);
+    }
+    
+    if (!candidateAddress || !candidateAddress.startsWith('0x') || candidateAddress.length !== 42) {
+      console.error('Invalid candidate address format:', candidateAddress);
+      throw new Error(`Invalid candidate address format: ${candidateAddress}`);
+    }
+    
+    // Debug candidate address
+    console.log('Candidate address details:', {
+      address: candidateAddress,
+      length: candidateAddress.length,
+      isHexString: /^0x[0-9a-fA-F]{40}$/.test(candidateAddress)
+    });
+    
+    const address = contractAddress as Address;
+    const candidate = candidateAddress as Address;
+    
+    // Helper function to wait
+    const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    
+    // First, check if this is a valid contract by trying a simple call (with retries)
+    let bytecodeVerified = false;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (!bytecodeVerified && retryCount < maxRetries) {
+      try {
+        console.log(`Verifying if address is a valid contract (attempt ${retryCount + 1}/${maxRetries})...`);
+        // @ts-expect-error - Config type incompatibility
+        const publicClient = getPublicClient(config);
+        
+        if (!publicClient) {
+          console.error('Unable to get publicClient');
+          throw new Error('Failed to initialize blockchain connection');
+        }
+        
+        const code = await publicClient.getBytecode({ address });
+        
+        if (!code || code === '0x') {
+          console.error('The address is not a contract:', contractAddress);
+          throw new Error(`The address ${contractAddress} is not a contract or doesn't exist`);
+        }
+        
+        console.log('Contract verification passed - bytecode exists');
+        bytecodeVerified = true;
+      } catch (bytecodeError) {
+        retryCount++;
+        if (retryCount >= maxRetries) {
+          console.error('Error verifying contract bytecode after multiple attempts:', bytecodeError);
+          console.warn('Proceeding with contract calls despite bytecode verification failure');
+          // We'll proceed anyway with a warning instead of throwing
+          break;
+        }
+        
+        console.log(`Bytecode verification failed, retrying in 2 seconds... (${retryCount}/${maxRetries})`);
+        await wait(2000); // Wait 2 seconds before retrying
+      }
+    }
+
+    // Try calling getVotesByAddress directly
+    try {
+      console.log('Calling getVotesByAddress with candidate:', candidate);
+      
+      // Print function info for debugging
+      console.log('Function call details:', {
+        contract: address,
+        function: 'getVotesByAddress',
+        args: [candidate]
+      });
+      
+      // @ts-expect-error - Config type incompatibility
+      const result = await readContract(config, {
+        address,
+        abi: VOTING_ABI,
+        functionName: 'getVotesByAddress',
+        args: [candidate],
+        // Add timeout option
+        timeout: 15000 // 15 seconds timeout
+      });
+      
+      console.log('Votes for candidate from getVotesByAddress:', result);
+      return Number(result);
+    } catch (directCallError) {
+      console.error('getVotesByAddress direct call failed:', directCallError);
+      
+      // Check if error is related to the candidate address
+      const errorString = String(directCallError);
+      if (errorString.includes('parameters passed to the contract function may be invalid')) {
+        console.error('Invalid candidate address detected:', candidate);
+        throw new Error(`Invalid candidate address: ${candidate}. Please verify this is a valid address recognized by the contract.`);
+      }
+      
+      // Try fallback approach - get all candidates first
+      try {
+        console.log('Attempting fallback - getting all candidates first');
+        // @ts-expect-error - Config type incompatibility
+        const allCandidates = await readContract(config, {
+          address,
+          abi: VOTING_ABI,
+          functionName: 'getAllCandidates',
+          // Add timeout option
+          timeout: 15000 // 15 seconds timeout
+        });
+        
+        console.log('Successfully retrieved candidates:', allCandidates);
+        
+        // If we got here but allCandidates is empty or not an array
+        if (!Array.isArray(allCandidates) || allCandidates.length === 0) {
+          console.log('No candidates found in contract, returning 0 votes');
+          return 0;
+        }
+        
+        // Search for the candidate in the list
+        const foundCandidate = allCandidates.find(
+          (c: { candidateAddress: Address; name: string }) => c.candidateAddress.toLowerCase() === candidate.toLowerCase()
+        );
+        
+        if (foundCandidate) {
+          console.log('Found candidate in the list:', foundCandidate);
+          
+          // Now try to get votes for the found candidate
+          // @ts-expect-error - Config type incompatibility
+          const votes = await readContract(config, {
+            address,
+            abi: VOTING_ABI,
+            functionName: 'getVotesByAddress',
+            args: [foundCandidate.candidateAddress],
+            // Add timeout option
+            timeout: 15000 // 15 seconds timeout
+          });
+          
+          console.log('Votes for candidate (fallback method):', votes);
+          return Number(votes);
+        } else {
+          console.log('Candidate not found in the list, returning 0 votes');
+          return 0;
+        }
+      } catch (fallbackError) {
+        console.error('Fallback approach also failed:', fallbackError);
+        throw new Error('Contract doesn\'t support the expected interface. Please check if this is a valid WhitelistedVoting contract.');
+      }
+    }
+  } catch (error) {
+    console.error('Error getting votes for candidate:', error);
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('Failed to get votes for candidate');
+  }
+}
