@@ -13,6 +13,22 @@ const nextConfig = {
   images: {
     domains: [''],
   },
+  // Workaround for build issues with dependencies
+  webpack: (config, { isServer }) => {
+    // Ignore warnings about missing optional dependencies
+    config.ignoreWarnings = [
+      { module: /node_modules\/pino\/lib\/tools\.js/ }
+    ];
+    
+    return config;
+  },
+  // Let Next.js handle the transpiling
+  transpilePackages: [
+    'wagmi', 
+    '@wagmi/core', 
+    'viem',
+    '@tanstack/react-query'
+  ],
 }
 
 module.exports = nextConfig 

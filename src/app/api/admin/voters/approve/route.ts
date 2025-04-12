@@ -156,15 +156,11 @@ export async function POST(
             { 
               $set: { 
                 ethTxHash: txHash,
-                ethSentAt: now.toISOString()
-              },
-              ...(electionId ? {
-                $set: { "electionApprovals.$[elem].ethTxHash": txHash }
-              } : {})
+                ethSentAt: now.toISOString(),
+                ...(electionId ? { "electionApprovals.$[elem].ethTxHash": txHash } : {})
+              }
             },
-            ...(electionId ? {
-              arrayFilters: [{ "elem.electionId": electionId }]
-            } : {})
+            electionId ? { arrayFilters: [{ "elem.electionId": electionId }] } : {}
           )
           
           console.log(`ETH sent to ${recipientAddress}, tx: ${txHash}`)
